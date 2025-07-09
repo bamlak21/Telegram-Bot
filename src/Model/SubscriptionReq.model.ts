@@ -4,7 +4,7 @@ import { Status } from "../services/types";
 const SubscriptionRequestSchema = new Schema(
   {
     userId: { type: String, required: true },
-    telegramId: { type: String, required: true, unique: true },
+    telegramId: { type: String, required: true },
     courseId: { type: String, required: true },
     groupId: { type: String, required: true },
     tx_ref: { type: String, required: true },
