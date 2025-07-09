@@ -56,34 +56,6 @@ bot.start(async (ctx) => {
   });
 });
 
-// 👇 Listen for member changes
-
-bot.on("new_chat_members", async (ctx) => {
-  const newMembers = ctx.message.new_chat_members;
-  const chatId = ctx.chat.id;
-
-  for (const user of newMembers) {
-    try {
-      // Path to your welcome image (adjust relative path as needed)
-      const imagePath = path.join(__dirname, "../../public/assets/welcome.png");
-
-      // Send photo with caption
-      await ctx.telegram.sendPhoto(
-        chatId,
-        { source: imagePath },
-        {
-          caption: `🎉 Welcome, ${user.first_name}! Glad to have you here.`,
-          parse_mode: "Markdown",
-        }
-      );
-    } catch (err) {
-      console.error("Failed to send welcome photo:", err);
-      // fallback to text only welcome message
-      await ctx.reply(`Welcome, ${user.first_name}! 🎉`);
-    }
-  }
-});
-
 bot.on("new_chat_members", async (ctx) => {
   console.log(JSON.stringify(ctx.update, null, 2));
 });
