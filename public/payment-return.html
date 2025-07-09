@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Returning to Bot</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <style>
+      :root {
+        --primary: #007bff;
+        --text: #333;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        padding: 0;
+        font-family: "Segoe UI", Roboto, Arial, sans-serif;
+        background-color: #f9f9f9;
+        color: var(--text);
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        align-items: center;
+        height: 100vh;
+        text-align: center;
+      }
+
+      .wrapper {
+        padding: 1.5rem;
+        max-width: 90%;
+        background: white;
+        border-radius: 12px;
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.1);
+      }
+
+      .logo {
+        width: 100px;
+        height: auto;
+        margin-bottom: 1rem;
+      }
+
+      h1 {
+        font-size: 1.5rem;
+        margin-bottom: 1rem;
+      }
+
+      #countdown {
+        font-size: 2rem;
+        font-weight: bold;
+        margin-bottom: 1rem;
+        color: var(--primary);
+      }
+
+      a {
+        text-decoration: none;
+        color: var(--primary);
+        font-weight: bold;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="wrapper">
+      <img src="/assets/logo.png" alt="Logo" class="logo" />
+      <h1>✅ Payment processed</h1>
+      <p>Returning to the bot in <span id="countdown">5</span> seconds...</p>
+      <p>
+        If you are not redirected,
+        <a href="https://t.me/dereco_bot">click here</a>.
+      </p>
+    </div>
+
+    <script>
+      function closeOrRedirect() {
+        if (window.Telegram && Telegram.WebApp) {
+          Telegram.WebApp.ready();
+          setTimeout(() => {
+            Telegram.WebApp.close();
+          }, 100); // Give Telegram time to initialize
+        } else {
+          // Fallback for when it's not running in Telegram
+          window.location.href = "https://t.me/dereco_bot";
+        }
+      }
+
+      let seconds = 5;
+      function updateCountdown() {
+        document.getElementById("countdown").textContent = seconds;
+        if (seconds > 0) {
+          seconds--;
+          setTimeout(updateCountdown, 1000);
+        } else {
+          closeOrRedirect();
+        }
+      }
+
+      window.addEventListener("load", () => {
+        setTimeout(updateCountdown, 100);
+      });
+    </script>
+  </body>
+</html>
