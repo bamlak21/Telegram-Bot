@@ -4,6 +4,7 @@ import { ServerConfig } from "./config/ServerConfig";
 import userRoute from "./routes/user.routes";
 import { Course } from "./Model/Course.model";
 import { User } from "./Model/User.model";
+import { startExpireJob } from "./jobs/ExpireChecker";
 
 const app = express();
 app.use(express.static("public"));
@@ -31,3 +32,4 @@ async function StartServer() {
 }
 
 StartServer();
+startExpireJob();

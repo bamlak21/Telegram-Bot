@@ -15,7 +15,9 @@ export const PayInit = async (req: Request, res: Response): Promise<void> => {
   try {
     const tx_ref = "TX-" + randomUUID();
 
-    const expireAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+    // const expireAt = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 Hours to expire
+    const expireAt = new Date(Date.now() + 1 * 60 * 1000); // 1 minute just for testing
+
     const user = await User.findOne({ _id: userId });
 
     if (!user) {

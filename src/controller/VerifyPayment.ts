@@ -39,6 +39,11 @@ export const VerifyPayment = async (
 
     console.log(chapaRes);
     sub.status = Status.COMPLETED;
+    // const expiresAt = new Date();
+    // expiresAt.setMonth(expiresAt.getMonth() + 1); // Properly roll over months
+    const expiresAt = new Date(Date.now() + 1 * 60 * 1000); // 1 minute just for testing
+
+    sub.expireAt = new Date(Date.now() - 2 * 60 * 1000);
     await sub.save();
 
     await SendGroupInvite(sub.telegramId, sub.groupId);

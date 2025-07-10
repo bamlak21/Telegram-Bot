@@ -29,7 +29,6 @@ Params) {
 
     const file = await ctx.telegram.getFile(chat.photo.big_file_id);
     const fileUrl = `https://api.telegram.org/file/bot${process.env.BOT_TOKEN}/${file.file_path}`;
-    const imagePath = path.join(__dirname, "../../public/assets/welcome.png");
 
     // Fetch the image as a stream using Axios
     const response = await axios.get(fileUrl, { responseType: "stream" });
