@@ -30,6 +30,7 @@ export async function InitializePayment({
         "http://localhost:5173/payment/success",
       return_url:
         process.env.CHAPA_RETURN_URL || "http://localhost:5173/payment/success",
+      channel: "telegram", // Added to request payment_token for Telegram
       // meta: false,
     };
 
@@ -40,19 +41,21 @@ export async function InitializePayment({
         "Content-Type": "application/json",
       },
     };
-    const chapaRes = axios.post(chapa_url, chapaReq, {
+    const chapaRes = await axios.post(chapa_url, chapaReq, {
       headers: opt.headers,
     });
 
     console.log(chapaReq);
-    console.log(chapaRes);
+    console.log(chapaRes.data);
 
-    const checkoutUrl: string = (await chapaRes).data.data.checkout_url;
-    console.log(checkoutUrl);
+    const checkoutUrl: string = chapaRes.data.data.checkout_url;
+    const paymentToken: string = chapaRes.data.data.payment_token;
+    console.log(checkoutUrl, paymentToken);
 
     return {
-      url: (await chapaRes).data.data.checkout_url,
-      status: (await chapaRes).data.status,
+      url: checkoutUrl,
+      payment_token: paymentToken,
+      status: chapaRes.data.status,
     };
   } catch (error) {
     console.log(error);

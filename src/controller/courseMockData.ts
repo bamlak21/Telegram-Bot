@@ -28,6 +28,7 @@ export const CourseData = async (
       courseId: course?._id,
       groupId: course?.groupId,
       groupSubPrice: course?.groupSubPrice,
+      courseName: course?.courseName, // Add courseName to response
     };
     res.status(200).json({ message: "User and course Found", ...responseData });
     return;

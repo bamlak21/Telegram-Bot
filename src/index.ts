@@ -16,6 +16,29 @@ app.get("/", async (_req, res: Response): Promise<void> => {
   return;
 });
 
+const mockCourse = {
+  groupId: "-1001234567890",
+  groupSubPrice: 250,
+  courseName: "Telegram Bot Development",
+};
+
+
+
+const mockUser = {
+  firstName: "John",
+  lastName: "Doe",
+  phoneNumber: "0912345678",
+  subscribedGroups: ["-1001234567890", "-1009876543210"],
+};
+
+
+async function createMocks() {
+  await new Course(mockCourse).save();
+  await new User(mockUser).save();
+}
+
+//createMocks();
+
 async function StartServer() {
   try {
     await mongoose.connect(ServerConfig.MongoUrl);

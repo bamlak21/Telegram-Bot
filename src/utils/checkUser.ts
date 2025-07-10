@@ -18,7 +18,7 @@ export async function Verify({
   console.log(`User Id: ${userId} and Course Id: ${courseId}`);
 
   try {
-    const res = await axios.get(`${process.env.NGROK}/api/user/checkuser`, {
+    const res = await axios.get(`${process.env.BaseUrl}/api/user/checkuser`, {
       params: { userId, courseId },
     });
 

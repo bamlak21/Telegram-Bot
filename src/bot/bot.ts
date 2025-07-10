@@ -5,11 +5,18 @@ import { Verify } from "../utils/checkUser";
 import { message } from "telegraf/filters";
 import { InitializePayment } from "../utils/chapaIntialization";
 import { error } from "console";
-import { sendGroupPhotoWithPayment } from "./photo";
+import { sendGroupPhotoAndInvoice } from "./photo";
 import { bot } from "./botInstance";
 import fs from "fs";
 import path from "path";
 import { ChatMemberUpdated } from "telegraf/typings/core/types/typegram";
+import { Subscription } from "../Model/Subscription.model";
+import { Course } from "../Model/Course.model";
+import mongoose from 'mongoose';
+
+mongoose.connect(ServerConfig.MongoUrl)
+  .then(() => console.log('MongoDB connected in bot process'))
+  .catch(err => console.error('MongoDB connection error in bot process:', err));
 
 bot.start(async (ctx) => {
   //Get user telegram ID
@@ -46,13 +53,15 @@ bot.start(async (ctx) => {
     console.log("Group id not found");
   }
 
-  await sendGroupPhotoWithPayment({
+  await sendGroupPhotoAndInvoice({
     ctx,
     groupId: checkUser.groupId,
     courseId: checkUser.courseId,
     userId: checkUser.userId,
     telegramId: `${userTelegramId}`,
     amount: checkUser.groupSubPrice,
+    courseName: checkUser.courseName,
+    phoneNumber: checkUser.phoneNumber, 
   });
 });
 
@@ -77,3 +86,54 @@ bot.launch();
 // Enable graceful stop
 process.once("SIGINT", () => bot.stop("SIGINT"));
 process.once("SIGTERM", () => bot.stop("SIGTERM"));
+
+// Handle pre-checkout query
+bot.on("pre_checkout_query", (ctx) => ctx.answerPreCheckoutQuery(true));
+
+// Handle successful payment
+bot.on("successful_payment", async (ctx) => {
+  await ctx.reply("✅ Payment received! You will be added to the group.");
+
+  const payload = ctx.message.successful_payment.invoice_payload;
+  const [userId, courseId] = payload.split("_");
+  const telegramId = ctx.from?.id?.toString() || "";
+  const tx_ref = payload;
+
+  // Fetch groupId from Course model
+  let groupId = "";
+  try {
+    const course = await Course.findById(courseId);
+    if (course && course.groupId) {
+      groupId = course.groupId;
+    } else {
+      console.error("Course not found or missing groupId for courseId:", courseId);
+      await ctx.reply("⚠️ Could not find group information for your subscription.");
+      return;
+    }
+  } catch (err) {
+    console.error("Failed to fetch course for groupId:", err);
+    await ctx.reply("⚠️ Could not find group information for your subscription.");
+    return;
+  }
+
+  console.log('these is ', userId,
+    telegramId,
+    courseId,
+    groupId,
+    tx_ref,);
+  
+  // Create a Subscription document
+  try {
+    await Subscription.create({
+      userId,
+      telegramId,
+      courseId,
+      groupId,
+      tx_ref,
+      expireAt: undefined, // Set if you have an expiration policy
+    });
+    console.log("Subscription created for user:", userId, "course:", courseId);
+  } catch (err) {
+    console.error("Failed to create subscription:", err);
+  }
+});
