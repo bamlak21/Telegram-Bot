@@ -1,15 +1,16 @@
+import { SendGroupInvite } from "../bot/SendInvite";
+import { Subscription } from "../Model/Subscription.model";
 import axios from "axios";
 
 type Data = {
   userId: string;
   courseId: string;
+  userTelegramId: Number;
 };
 
-export async function Verify({
-  userId = "686ba434f384c9ca4604e481",
-  courseId = "686ba434f384c9ca4604e480",
-}: Data) {
-  console.log(`${userId} and ${courseId}`);
+export async function Verify({ userId, courseId, userTelegramId }: Data) {
+  console.log(`${userId} and ${courseId} and ${userTelegramId}`);
+  const telegramId = String(userTelegramId);
 
   if (!userId || !courseId) {
     console.log("Course and User Id not found");
@@ -27,7 +28,24 @@ export async function Verify({
       return { success: false, message: res.data.message };
     }
 
-    console.log(res);
+    const existingSub = await Subscription.findOne({
+      userId,
+      courseId,
+      telegramId,
+      status: "Completed",
+      expireAt: { $gt: new Date() },
+    }).lean();
+
+    console.log("Existing Sub: ", existingSub);
+
+    if (existingSub) {
+      console.log("user already subbed");
+      return {
+        success: true,
+        exists: true,
+        ...existingSub,
+      };
+    }
 
     return { success: true, ...res.data };
   } catch (err) {

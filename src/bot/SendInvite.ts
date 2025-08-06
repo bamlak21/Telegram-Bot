@@ -1,31 +1,31 @@
 import { bot } from "./botInstance";
 
-export async function SendGroupInvite(telegramId: string, groupId: string) {
+export async function SendGroupInvite(
+  telegramId: string,
+  groupId: string,
+  text: string
+) {
   try {
-    const member = await bot.telegram.getChatMember(
-      groupId,
-      Number(telegramId)
-    );
-
-    if (["member", "administrator", "creator"].includes(member.status)) {
-      await bot.telegram.sendMessage(
-        Number(telegramId),
-        "✅ You are already a member of the group."
-      );
-      return;
-    }
-
     // ✅ Create a one-time invite link (expires in 10 mins)
+    console.log("telegramId type:", typeof telegramId);
+    console.log("GroupId type: ", typeof groupId);
 
-    const invite = await bot.telegram.createChatInviteLink(groupId, {
-      expire_date: Math.floor(Date.now() / 1000) + 600,
+    const invite = await bot.telegram.createChatInviteLink(Number(groupId), {
       member_limit: 1,
     });
 
     await bot.telegram.sendMessage(
       Number(telegramId),
-      `🎉 Payment verified! Join your group here:\n${invite.invite_link}`
+      `🎉 ${text} the group here:\n${invite.invite_link}`
     );
+
+    console.log(
+      "Sent invite to user: ",
+      telegramId,
+      "link: ",
+      invite.invite_link
+    );
+
     return;
   } catch (error) {
     console.log(error);

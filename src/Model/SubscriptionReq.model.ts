@@ -15,7 +15,12 @@ const SubscriptionRequestSchema = new Schema(
       default: Status.PENDING,
     },
     expireAt: Date,
+    notifiedBeforeExpiry: {
+      type: [Number],
+      default: [],
+    },
   },
+
   { timestamps: true }
 );
 

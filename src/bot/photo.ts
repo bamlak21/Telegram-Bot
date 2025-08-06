@@ -2,6 +2,7 @@ import axios from "axios";
 import path from "path";
 import { Context } from "telegraf";
 import { InitializePayment } from "../utils/chapaIntialization";
+import { response } from "express";
 
 type Params = {
   ctx: Context;
@@ -48,16 +49,22 @@ export async function sendGroupPhotoWithPayment({
     });
 
     // Log all incoming parameters and payment initialization response for tracing
-    console.log('sendGroupPhotoWithPayment params:', { groupId, courseId, userId, telegramId, amount });
-    console.log('Chapa payment initialization request:', {
+    console.log("sendGroupPhotoWithPayment params:", {
+      groupId,
+      courseId,
+      userId,
+      telegramId,
+      amount,
+    });
+    console.log("Chapa payment initialization request:", {
       amount: amount.toString(),
       firstName: "TelegramUser",
       lastName: telegramId,
       phoneNumber: "0910000000",
       tx_ref,
-      channel: 'telegram',
+      channel: "telegram",
     });
-    console.log('Chapa payment initialization response:', paymentInit);
+    console.log("Chapa payment initialization response:", paymentInit);
 
     let paymentButtonUrl: string | undefined = undefined;
     let paymentButtonText = `Pay ${amount} Birr to Join`;
@@ -65,9 +72,11 @@ export async function sendGroupPhotoWithPayment({
       paymentButtonUrl = `https://t.me/Mercato_Online_bot?start=${paymentInit.payment_token}`;
     } else if (paymentInit && paymentInit.url) {
       paymentButtonUrl = paymentInit.url;
-      paymentButtonText += ' (opens in browser)';
+      paymentButtonText += " (opens in browser)";
     } else {
-      await ctx.reply("❌ Could not initialize payment. Please try again later.");
+      await ctx.reply(
+        "❌ Could not initialize payment. Please try again later."
+      );
       return;
     }
 
@@ -118,7 +127,9 @@ export async function sendGroupInvoiceWithPayment({
     });
   } catch (err) {
     console.error("❌ Failed to send invoice:", err);
-    await ctx.reply("⚠️ Could not send the payment invoice. Please try again later.");
+    await ctx.reply(
+      "⚠️ Could not send the payment invoice. Please try again later."
+    );
   }
 }
 
@@ -136,16 +147,20 @@ export async function sendGroupPhotoAndInvoice({
   try {
     // Try to fetch and send the group photo
     let photoSent = false;
+    let image;
     try {
       const chat = await ctx.telegram.getChat(groupId);
       if (chat.photo) {
         const file = await ctx.telegram.getFile(chat.photo.big_file_id);
         const fileUrl = `https://api.telegram.org/file/bot${process.env.BOT_TOKEN}/${file.file_path}`;
         const response = await axios.get(fileUrl, { responseType: "stream" });
+        image = response.data;
         await ctx.replyWithPhoto(
           { source: response.data },
           {
-            caption: `📚 Welcome to the group!\n💳 Proceed to payment for: ${courseName || "the course"}`,
+            caption: `📚 Welcome to the group!\n💳 Proceed to payment for: ${
+              courseName || "the course"
+            }`,
           }
         );
         photoSent = true;
@@ -154,26 +169,38 @@ export async function sendGroupPhotoAndInvoice({
       console.error("Could not fetch/send group photo:", err);
     }
     if (!photoSent) {
-      await ctx.reply(`📚 Welcome to the group!\n💳 Proceed to payment for: ${courseName || "the course"}`);
+      await ctx.reply(
+        `📚 Welcome to the group!\n💳 Proceed to payment for: ${
+          courseName || "the course"
+        }`
+      );
     }
 
     // Now send the payment invoice
+    if (!amount || isNaN(Number(amount))) {
+      console.error("❌ Invalid amount provided:", amount);
+      await ctx.reply("⚠️ Payment amount is invalid. Please contact support.");
+      return;
+    }
     const priceInCents = Math.round(Number(amount) * 100);
     await ctx.replyWithInvoice({
       title: courseName || "Group Subscription",
       description: `Pay to join the group for ${courseName || "this course"}`,
       payload: `${userId}_${courseId}_${Date.now()}`,
-      provider_token: process.env.CHAPA_PROVIDER_TOKEN || "<YOUR_CHAPA_PROVIDER_TOKEN>",
+      provider_token:
+        process.env.CHAPA_PROVIDER_TOKEN || "<YOUR_CHAPA_PROVIDER_TOKEN>",
       currency: "ETB",
       prices: [{ label: courseName || "Group Access", amount: priceInCents }],
       start_parameter: "pay",
-      //need_phone_number: true,
+      need_phone_number: true,
       send_phone_number_to_provider: true,
-      provider_data: JSON.stringify({ phone: phoneNumber || "" }),
+      // provider_data: JSON.stringify({ phone: phoneNumber || "" }),
       // Optionally, you can use the group photo URL as photo_url
     });
   } catch (err) {
     console.error("❌ Failed to send group photo and invoice:", err);
-    await ctx.reply("⚠️ Could not send the payment invoice. Please try again later.");
+    await ctx.reply(
+      "⚠️ Could not send the payment invoice. Please try again later."
+    );
   }
 }

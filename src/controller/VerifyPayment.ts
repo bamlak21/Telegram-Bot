@@ -41,7 +41,6 @@ export const VerifyPayment = async (
     sub.status = Status.COMPLETED;
     await sub.save();
 
-    await SendGroupInvite(sub.telegramId, sub.groupId);
     res.status(200).json({ success: true, message: "Payment verified" });
     return;
   } catch (error) {
