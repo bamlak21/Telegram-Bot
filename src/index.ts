@@ -15,7 +15,7 @@ app.use("/uploads", express.static("uploads"));
 app.use("/api/user", userRoute);
 
 app.get("/", async (_req, res: Response): Promise<void> => {
-  res.send("sup");
+  res.send("Hello , api deployed");
   return;
 });
 
