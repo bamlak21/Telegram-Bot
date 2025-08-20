@@ -1,7 +1,10 @@
 import { Telegraf } from "telegraf";
 import { ServerConfig } from "../config/ServerConfig";
 import { Verify } from "../utils/checkUser";
-import { sendGroupInvoiceWithPayment, sendGroupPhotoAndInvoice } from "./photo";
+import {
+  sendGroupInvoiceWithPayment,
+  sendGroupPhotoAndInvoice,
+} from "./invoice";
 import { bot } from "./botInstance";
 import { Subscription } from "../Model/Subscription.model";
 import { Course } from "../Model/Course.model";
