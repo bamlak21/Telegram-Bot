@@ -30,14 +30,13 @@ export async function InitializePayment({
         "http://localhost:5173/payment/success",
       return_url:
         process.env.CHAPA_RETURN_URL || "http://localhost:5173/payment/success",
-      channel: "telegram", // Added to request payment_token for Telegram
-      // meta: false,
+      channel: "telegram",
     };
 
     const opt = {
       url: chapa_url,
       headers: {
-        Authorization: `Bearer ${process.env.CHAPA_API_KEY}`,
+        Authorization: `Bearer ${process.env.CHAPA_API_KEY || process.env.CHAPA_SECRET_KEY}`,
         "Content-Type": "application/json",
       },
     };
@@ -48,16 +47,20 @@ export async function InitializePayment({
     console.log(chapaReq);
     console.log(chapaRes.data);
 
-    const checkoutUrl: string = chapaRes.data.data.checkout_url;
-    const paymentToken: string = chapaRes.data.data.payment_token;
+    const data = chapaRes.data?.data || {};
+    const checkoutUrl: string = data.checkout_url;
+    const paymentToken: string = data.payment_token;
+    const echoedTxRef: string = data.tx_ref || tx_ref;
     console.log(checkoutUrl, paymentToken);
 
     return {
       url: checkoutUrl,
       payment_token: paymentToken,
       status: chapaRes.data.status,
+      tx_ref: echoedTxRef,
     };
   } catch (error) {
     console.log(error);
+    return undefined;
   }
 }

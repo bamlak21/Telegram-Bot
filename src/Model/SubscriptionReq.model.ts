@@ -3,18 +3,22 @@ import { Status } from "../services/types";
 
 const SubscriptionRequestSchema = new Schema(
   {
-    userId: { type: String, required: true },
-    telegramId: { type: String, required: true },
-    courseId: { type: String, required: true },
+    userId: { type: String, required: true, index: true },
     groupId: { type: String, required: true },
-    tx_ref: { type: String, required: true },
+    tx_ref: { type: String, required: true, index: true },
     status: {
       type: String,
       required: true,
-      enum: Object.values(Status),
-      default: Status.PENDING,
+      default: "active",
     },
-    expireAt: Date,
+    paymentStatus: { type: String, enum: ["pending", "paid", "renewed", "expired"], default: "pending", index: true },
+    joinDate: { type: Date },
+    expireAt: { type: Date, index: true },
+    communityId: { type: String, index: true },
+    communityName: { type: String },
+    amount: { type: Number },
+    expiryNoticeCount: { type: Number, default: 0 },
+    lastNoticeAt: { type: Date },
   },
   { timestamps: true }
 );

@@ -6,4 +6,6 @@ if (!ServerConfig.BOT_TOKEN) {
   throw new Error("Bot Token not Found in side .env");
 }
 
-export const bot = new Telegraf(ServerConfig.BOT_TOKEN);
+const bot = new Telegraf(process.env.BOT_TOKEN || "");
+
+export { bot };

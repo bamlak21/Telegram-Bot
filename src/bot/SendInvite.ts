@@ -1,34 +1,17 @@
 import { bot } from "./botInstance";
 
-export async function SendGroupInvite(telegramId: string, groupId: string) {
+export async function SendGroupInvite(userId: string, groupId: string): Promise<void> {
   try {
-    const member = await bot.telegram.getChatMember(
-      groupId,
-      Number(telegramId)
-    );
-
-    if (["member", "administrator", "creator"].includes(member.status)) {
-      await bot.telegram.sendMessage(
-        Number(telegramId),
-        "✅ You are already a member of the group."
-      );
-      return;
-    }
-
-    // ✅ Create a one-time invite link (expires in 10 mins)
-
-    const invite = await bot.telegram.createChatInviteLink(groupId, {
-      expire_date: Math.floor(Date.now() / 1000) + 600,
+    console.log(`📨 Attempting to send group invite for user ${userId} to group ${groupId}`);
+    // Assuming you use Telegraf to send the invite link
+    const inviteLink = await bot.telegram.createChatInviteLink(groupId, {
       member_limit: 1,
+      creates_join_request: false,
     });
-
-    await bot.telegram.sendMessage(
-      Number(telegramId),
-      `🎉 Payment verified! Join your group here:\n${invite.invite_link}`
-    );
-    return;
+    await bot.telegram.sendMessage(userId, `Join the group using this link: ${inviteLink.invite_link}`);
+    console.log(`✅ Invite link sent to user ${userId} for group ${groupId}`);
   } catch (error) {
-    console.log(error);
-    return;
+    console.error(`❌ Failed to send group invite for user ${userId} to group ${groupId}:`, error);
+    throw new Error(`Failed to send invite: ${(error as Error).message}`);
   }
 }

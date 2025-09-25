@@ -1,0 +1,727 @@
+import { Telegraf } from "telegraf";
+import { ServerConfig } from "../config/ServerConfig";
+import axios from "axios";
+import { Verify } from "../utils/checkUser";
+import { message } from "telegraf/filters";
+import { InitializePayment } from "../utils/chapaIntialization";
+import { error } from "console";
+import { sendGroupPhotoAndInvoice } from "./photo";
+import { bot } from "./botInstance";
+import fs from "fs";
+import path from "path";
+import { ChatMemberUpdated } from "telegraf/typings/core/types/typegram";
+import { Subscription } from "../Model/Subscription.model";
+import { Course } from "../Model/Course.model";
+import mongoose from 'mongoose';
+
+// Define storage variables
+const paymentSessions = new Map();
+const userLanguages = new Map();
+const pendingInvites = new Map();
+
+// Define helper functions
+async function showCommunities(ctx: any, language: string) {
+  try {
+    // Fetch all available communities
+    const apiUrl = process.env.BaseUrl2 || "http://localhost:7071";
+    const response = await axios.get(`${apiUrl}/api/v1/community-management`);
+    
+    if (response.data && response.data.data && response.data.data.length > 0) {
+      const communities = response.data.data;
+      
+      // Debug logging
+      console.log('API Response:', response.data);
+      console.log('Communities data:', communities);
+      console.log('First community mentor:', communities[0]?.mentor);
+      
+      if (language === "en") {
+        // English welcome message
+        const welcomeMessage = `🎉 **Welcome to Mercato Online Bot!**
+
+Here are the available private communities you can join:
+
+**Total Communities:** ${communities.length}`;
+        
+        await ctx.reply(welcomeMessage, { parse_mode: 'Markdown' });
+      } else {
+        // Amharic welcome message
+        const welcomeMessage = `🎉 **ወደ Mercato Online Bot እንኳን በደህና መጡ!**
+
+እነዚህ ሊቀላቀሉ የሚችሉ የግል ማህበረሰቦች ናቸው:
+
+**ጠቅላላ ማህበረሰቦች:** ${communities.length}`;
+        
+        await ctx.reply(welcomeMessage, { parse_mode: 'Markdown' });
+      }
+      
+      // Send each community with image and join button
+      for (let i = 0; i < communities.length; i++) {
+        const community = communities[i];
+        
+        // Debug logging
+        console.log('Community data:', {
+          name: community.name,
+          id: community.id,
+          mentor: community.mentor,
+          mentorName: community.mentor?.name,
+          mentorSlugFromMentor: community.mentor?.slug,
+          price: community.price,
+          image: community.image
+        });
+        
+        // Prepare community message
+        let communityMessage = '';
+        let keyboard = {};
+        
+        if (language === "en") {
+          // English community message
+          communityMessage = `🏛️ **${community.name}**
+
+👨‍🏫 **Mentor:** ${community.mentor?.name || 'Unknown Mentor'}
+💰 **Price:** ${community.price} birr`;
+          
+          keyboard = {
+            inline_keyboard: [
+              [
+                {
+                  text: `🚀 Join ${community.name}`,
+                  callback_data: `join_community_${community.id}` // Use community ID instead
+                }
+              ]
+            ]
+          };
+        } else {
+          // Amharic community message
+          communityMessage = `🏛️ **${community.name}**
+
+👨‍🏫 **መምህር:** ${community.mentor?.name || 'ያልታወቀ መምህር'}
+💰 **ዋጋ:** ${community.price} ብር`;
+          
+          keyboard = {
+            inline_keyboard: [
+              [
+                {
+                  text: `🚀 ${community.name} ላይ ተቀላቀል`,
+                  callback_data: `join_community_${community.id}` // Use community ID instead
+                }
+              ]
+            ]
+          };
+        }
+        
+        // Send community with image if available
+        if (community.image) {
+          try {
+            // Use the image URL directly (it's already a full URL)
+            const imageUrl = community.image;
+            
+            // Send photo with caption
+            await ctx.replyWithPhoto(imageUrl, {
+              caption: communityMessage,
+              parse_mode: 'Markdown',
+              reply_markup: keyboard
+            });
+            
+            console.log(`✅ Sent community ${community.name} with image: ${imageUrl}`);
+          } catch (photoError) {
+            console.error('Error sending photo, falling back to text message:', photoError);
+            // Fallback to text message if photo fails
+            await ctx.reply(communityMessage, {
+              parse_mode: 'Markdown',
+              reply_markup: keyboard
+            });
+          }
+        } else {
+          // No image, send text message only
+          await ctx.reply(communityMessage, {
+            parse_mode: 'Markdown',
+            reply_markup: keyboard
+          });
+        }
+      }
+      
+    } else {
+      // No communities available
+      if (language === "en") {
+        await ctx.reply(`🎉 **Welcome to Mercato Online Bot!**
+
+Currently, there are no private communities available.
+
+**To access a community:**
+1. Type: /join_community COMMUNITY_NAME
+2. Or paste the community name directly
+3. I'll help you access it immediately!
+
+**Need help?** Type /help for more information.`);
+      } else {
+        await ctx.reply(`🎉 **ወደ Mercato Online Bot እንኳን በደህና መጡ!**
+
+አሁን ምንም የግል ማህበረሰቦች አይገኙም።
+
+**ማህበረሰብ ለመድረስ:**
+1. ይፃፉ: /join_community የማህበረሰብ_ስም
+2. ወይም የማህበረሰብ ስምን በቀጥታ ያስገቡ
+3. ወዲያውኑ እረዳዎታለሁ!
+
+**እርዳታ ያስፈልግዎታል?** /help ይፃፉ።`);
+      }
+    }
+    
+  } catch (error) {
+    console.error("Error fetching communities:", error);
+    
+    // Fallback message if API fails
+    if (language === "en") {
+      await ctx.reply(`🎉 **Welcome to Mercato Online Bot!**
+
+**To access a private community:**
+1. Type: /join_community COMMUNITY_NAME
+2. Or paste the community name directly
+3. I'll help you access it immediately!
+
+**Need help?** Type /help for more information.`);
+    } else {
+      await ctx.reply(`🎉 **ወደ Mercato Online Bot እንኳን በደህና መጡ!**
+
+**የግል ማህበረሰብ ለመድረስ:**
+1. ይፃፉ: /join_community የማህበረሰብ_ስም
+2. ወይም የማህበረሰብ ስምን በቀጥታ ያስገቡ
+3. ወዲያውኑ እረዳዎታለሁ!
+
+**እርዳታ ያስፈልግዎታል?** /help ይፃፉ።`);
+    }
+  }
+}
+
+// Function to handle private community access
+async function handlePrivateCommunityAccess(ctx: any, userId: string, lecturerSlug: string, telegramId: number) {
+  try {
+    console.log(`Processing private community access for user ${userId} and lecturer ${lecturerSlug}`);
+
+    // Fetch community data from API using lecturer slug
+    const apiUrl = process.env.BaseUrl || 'http://localhost:7071';
+    const response = await axios.get(`${apiUrl}/api/v1/community-management`, {
+      params: { mentorSlug: lecturerSlug }
+    });
+
+    if (!response.data || !response.data.data || response.data.data.length === 0) {
+      return ctx.reply("❌ Private community not found for this lecturer.");
+    }
+
+    const community = response.data.data[0]; // Get the first matching community
+    
+    const welcomeMessage = `🎉 Welcome to the Private Community!
+
+👨‍🏫 **Lecturer**: ${community.name}
+💰 **Price**: ${community.price} birr
+🔗 **Community URL**: ${community.url}
+
+You have access to:
+📚 Exclusive course materials
+💬 Private discussion group
+🎯 Direct mentor support
+📱 Personalized guidance
+
+Use the buttons below to access community features:`;
+
+    await ctx.reply(welcomeMessage, {
+      parse_mode: "Markdown",
+      reply_markup: {
+        inline_keyboard: [
+          [
+            {
+              text: "🌐 Visit Community",
+              url: community.url,
+            }
+          ],
+          [
+            {
+              text: "💬 Join Discussion",
+              callback_data: `join_community_${community.id}`,
+            }
+          ],
+          [
+            {
+              text: "📚 Course Materials",
+              callback_data: `materials_${community.id}`,
+            }
+          ],
+          [
+            {
+              text: "🎯 Contact Mentor",
+              callback_data: `contact_mentor_${community.id}`,
+            }
+          ]
+        ]
+      }
+    });
+
+    console.log(`Private community access granted for user ${userId} to community ${community.id}`);
+
+  } catch (error) {
+    console.error('Error handling private community access:', error);
+    await ctx.reply("❌ Sorry, there was an error accessing the private community. Please try again later.");
+  }
+}
+
+mongoose.connect(ServerConfig.MongoUrl)
+  .then(() => console.log('MongoDB connected in bot process'))
+  .catch(err => console.error('MongoDB connection error in bot process:', err));
+
+  // Add this at the very beginning of your bot file, right after imports
+  console.log("🚀 Bot file loaded, setting up handlers...");
+
+  // 3. Register your command handlers
+  bot.command("start", async (ctx) => {
+    console.log("🚀 /start command executed by user:", ctx.from?.id);
+    // Show language selection
+    await ctx.reply("🌍 **Welcome! Please select your language:**", {
+      parse_mode: 'Markdown',
+      reply_markup: {
+        inline_keyboard: [
+          [
+            { text: "🇺 English", callback_data: "language_en" },
+            { text: "🇪🇹 አማርኛ", callback_data: "language_am" }
+          ]
+        ]
+      }
+    });
+  });
+
+  // 4. Register action handlers
+  bot.action("language_en", async (ctx) => {
+    const userTelegramId = ctx.from?.id;
+    userLanguages.set(userTelegramId, "en");
+    
+    await ctx.reply("🇺🇸 **Language set to English!**\n\nWelcome to Mercato Online Bot! Let me show you the available communities.");
+    await showCommunities(ctx, "en"); // Now this should work
+    await ctx.answerCbQuery("✅ Language set to English");
+  });
+
+  bot.action("language_am", async (ctx) => {
+    const userTelegramId = ctx.from?.id;
+    userLanguages.set(userTelegramId, "am");
+    
+    await ctx.reply("🇪🇹 **ቋንቋ ወደ አማርኛ ተቀይሯል!**\n\nወደ Mercato Online Bot እንኳን በደህና መጡ! የሚገኙ ማህበረሰቦችን እንድያዩ ያድርጉኝ።");
+    await showCommunities(ctx, "am"); // Now this should work
+    await ctx.answerCbQuery("✅ ቋንቋ ወደ አማርኛ ተቀይሯል");
+  });
+
+  // Add missing action handlers
+  bot.action(/^join_community_(.+)$/, async (ctx) => {
+    const communityId = ctx.match[1];
+    const userTelegramId = ctx.from?.id;
+    
+    console.log(`Join community button clicked - User: ${userTelegramId}, Community ID: ${communityId}`);
+    
+    try {
+      // Fetch community details by ID
+      const apiUrl = process.env.BaseUrl2 || "http://localhost:7071";
+      const response = await axios.get(`${apiUrl}/api/v1/community-management/${communityId}`);
+      
+      if (response.data && response.data.data) {
+        const community = response.data.data;
+        
+        console.log('Fetched community details:', community);
+        
+        // Generate unique payment reference
+        const paymentRef = `COMM_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+        
+        // Get user's language preference
+        const userLanguage = userLanguages.get(userTelegramId) || "en";
+        
+        // Store payment session with pending user info
+        const sessionData = {
+          userId: userTelegramId,
+          mentorSlug: community.mentor?.slug,
+          communityName: community.name,
+          paymentRef: paymentRef,
+          amount: community.price,
+          status: 'awaiting_full_name',
+          language: userLanguage
+        };
+        
+        console.log('Creating payment session with data:', sessionData);
+        paymentSessions.set(userTelegramId, sessionData);
+        
+        // Start with full name input
+        if (userLanguage === "en") {
+          await ctx.reply(`✏️ **Please enter your full name**
+
+**Community:** ${community.name}
+**Price:** ${community.price} birr
+
+**Type your full name and press Enter:**`, {
+            parse_mode: 'Markdown',
+            reply_markup: {
+              inline_keyboard: [
+                [
+                  {
+                    text: `🔙 Back to Communities`,
+                    callback_data: 'back_to_communities'
+                  }
+                ]
+              ]
+            }
+          });
+        } else {
+          await ctx.reply(`✏️ **እባክዎ ሙሉ ስምዎን ያስገቡ**
+
+**ማህበረሰብ:** ${community.name}
+**ዋጋ:** ${community.price} ብር
+
+**ሙሉ ስምዎን ይፃፉ እና Enter ያድርጉ:**`, {
+            parse_mode: 'Markdown',
+            reply_markup: {
+              inline_keyboard: [
+                [
+                  {
+                    text: `🔙 Back to Communities`,
+                    callback_data: 'back_to_communities'
+                  }
+                ]
+              ]
+            }
+          });
+        }
+        
+        await ctx.answerCbQuery(`✅ Please provide your information!`);
+      
+      } else {
+        await ctx.reply(`❌ Community not found or no longer available.
+
+Please try /start to see the current list of communities.`);
+        await ctx.answerCbQuery(`❌ Community not found`);
+      }
+      
+    } catch (error) {
+      console.error("Error fetching community details:", error);
+      await ctx.reply(`⚠️ Could not fetch community details. Please try again later.`);
+      await ctx.answerCbQuery(`❌ Error occurred`);
+    }
+  });
+
+  // Add message handler for text input
+  bot.on("message", async (ctx) => {
+    // Only process text messages
+    if (!('text' in ctx.message) || !ctx.message.text) {
+      return;
+    }
+
+    const text = ctx.message.text;
+    const userTelegramId = ctx.from?.id;
+
+    // Skip commands
+    if (text.startsWith('/')) {
+      return;
+    }
+
+    // Handle payment session input
+    const paymentSession = paymentSessions.get(userTelegramId);
+    
+    if (paymentSession && paymentSession.status === 'awaiting_full_name') {
+      // User is entering full name
+      console.log(`Full name received from user ${userTelegramId}: ${text}`);
+      
+      // Store name in payment session
+      paymentSession.fullName = text.trim();
+      paymentSession.status = 'awaiting_phone';
+      paymentSessions.set(userTelegramId, paymentSession);
+      
+      const userLanguage = paymentSession.language || "en";
+      
+      if (userLanguage === "en") {
+        await ctx.reply(`✅ **Full name received!** 
+
+**Name:** ${paymentSession.fullName}
+
+Now please enter your phone number (10 digits):
+**Type your phone number and press Enter:**`, { 
+          parse_mode: 'Markdown',
+          reply_markup: {
+            inline_keyboard: [
+              [
+                {
+                  text: `🔙 Back to Communities`,
+                  callback_data: 'back_to_communities'
+                }
+              ]
+            ]
+          }
+        });
+      } else {
+        await ctx.reply(`✅ **ሙሉ ስም ተቀብሏል!** 
+
+**ስም:** ${paymentSession.fullName}
+
+አሁን እባክዎ የስልክ ቁጥርዎን ያስገቡ (10 አሃዞች):
+**የስልክ ቁጥርዎን ይፃፉ እና Enter ያድርጉ:**`, { 
+          parse_mode: 'Markdown',
+          reply_markup: {
+            inline_keyboard: [
+              [
+                {
+                  text: `🔙 Back to Communities`,
+                  callback_data: 'back_to_communities'
+                }
+              ]
+            ]
+          }
+        });
+      }
+      return;
+    }
+    
+    if (paymentSession && paymentSession.status === 'awaiting_phone') {
+      // User is entering phone number
+      console.log(`Phone number received from user ${userTelegramId}: ${text}`);
+      
+      // Validate phone number (should be 10 digits)
+      const phoneNumber = text.trim();
+      if (phoneNumber.length !== 10 || !/^\d+$/.test(phoneNumber)) {
+        const userLanguage = paymentSession.language || "en";
+        
+        if (userLanguage === "en") {
+          await ctx.reply(`❌ **Invalid phone number!** 
+
+Please enter a 10-digit phone number (numbers only).
+
+**Example:** 0912345678
+
+**Try again:**`, { 
+          parse_mode: 'Markdown',
+          reply_markup: {
+            inline_keyboard: [
+              [
+                {
+                  text: `🔙 Back to Communities`,
+                  callback_data: 'back_to_communities'
+                }
+              ]
+            ]
+          }
+        });
+        } else {
+          await ctx.reply(`❌ **የስልክ ቁጥር ስህተት!** 
+
+እባክዎ 10-አሃዝ የስልክ ቁጥር ያስገቡ (ቁጥሮች ብቻ).
+
+**ምሳሌ:** 0912345678
+
+**እንደገና ይሞክሩ:**`, { 
+          parse_mode: 'Markdown',
+          reply_markup: {
+            inline_keyboard: [
+              [
+                {
+                  text: `🔙 Back to Communities`,
+                  callback_data: 'back_to_communities'
+                }
+              ]
+            ]
+          }
+        });
+        }
+      return;
+    }
+    
+    // Store phone in payment session
+    paymentSession.phoneNumber = phoneNumber;
+    paymentSession.status = 'ready_for_submit';
+    paymentSessions.set(userTelegramId, paymentSession);
+    
+    // Show review and submit options with SHORTER callback data
+    const userLanguage = paymentSession.language || "en";
+    
+    if (userLanguage === "en") {
+      await ctx.reply(`✅ **Information Complete!** 
+
+**Your Information:**
+- Full Name: ${paymentSession.fullName}
+- Phone: ${paymentSession.phoneNumber}
+
+**Community Details:**
+- Community: ${paymentSession.communityName}
+- Amount: ${paymentSession.amount} birr
+
+**Ready to proceed?** Click "Submit & Continue to Payment" 💳`, { 
+      parse_mode: 'Markdown',
+      reply_markup: {
+        inline_keyboard: [
+          [
+            {
+              text: `✅ Submit & Continue to Payment`,
+              callback_data: `submit_${userTelegramId}` // Use shorter callback data
+            }
+          ],
+          [
+            {
+              text: `🔙 Back to Communities`,
+              callback_data: 'back_to_communities'
+            }
+          ]
+        ]
+      }
+    });
+    } else {
+      await ctx.reply(`✅ **መረጃ ተሟልቷል!** 
+
+**መረጃዎ:**
+- ሙሉ ስም: ${paymentSession.fullName}
+- ስልክ: ${paymentSession.phoneNumber}
+
+**የማህበረሰብ ዝርያዎች:**
+- ማህበረሰብ: ${paymentSession.communityName}
+- ዋጋ: ${paymentSession.amount} ብር
+
+**ለመቀጠል ዝግጁ?** "ያስገቡ እና ወደ ክፍያ ይቀጥሉ" ጠቅ ያድሩ 💳`, { 
+      parse_mode: 'Markdown',
+      reply_markup: {
+        inline_keyboard: [
+          [
+            {
+              text: `✅ ያስገቡ እና ወደ ክፍያ ይቀጥሉ`,
+              callback_data: `submit_${userTelegramId}` // Use shorter callback data
+            }
+          ],
+          [
+            {
+              text: `🔙 Back to Communities`,
+              callback_data: 'back_to_communities'
+            }
+          ]
+        ]
+      }
+    });
+    }
+    return;
+  });
+
+  // Update the submit handler to use the new callback data format
+  bot.action(/^submit_(.+)$/, async (ctx) => {
+    const userTelegramId = ctx.match[1];
+    
+    // Get user's payment session
+    const paymentSession = paymentSessions.get(userTelegramId);
+    
+    console.log('Retrieved payment session:', paymentSession);
+    
+    if (!paymentSession || paymentSession.status !== 'ready_for_submit') {
+      await ctx.reply("❌ **Invalid submission state.** Please complete your information first.");
+      return;
+    }
+    
+    // Prepare payment data for Chapa
+    const paymentData = {
+      amount: paymentSession.amount,
+      email: paymentSession.fullName, // Assuming email is the full name
+      firstName: paymentSession.fullName,
+      lastName: "", // No last name in this case
+      phoneNumber: paymentSession.phoneNumber,
+      currency: "ETB",
+      tx_ref: paymentSession.paymentRef,
+      callback_url: `${process.env.BaseUrl}/api/v1/payment/callback`, // Replace with your actual callback URL
+      return_url: `${process.env.BaseUrl}/api/v1/payment/return`, // Replace with your actual return URL
+      client_ip: ctx.from?.ip,
+      user_agent: ctx.from?.user_agent,
+      device_id: ctx.from?.id.toString(),
+      os_type: "web",
+      payment_method: "bank_transfer", // Or "mobile_money"
+      subaccount: process.env.ChapaSubAccountId, // Replace with your Chapa sub-account ID
+      split_code: process.env.ChapaSplitCode, // Replace with your Chapa split code
+      metadata: {
+        user_id: userTelegramId,
+        mentor_slug: paymentSession.mentorSlug,
+        community_name: paymentSession.communityName,
+        payment_ref: paymentSession.paymentRef,
+        amount: paymentSession.amount,
+        status: 'awaiting_payment',
+        language: paymentSession.language
+      }
+    };
+
+    try {
+      const response = await InitializePayment(paymentData);
+      console.log("Chapa payment initialization response:", response);
+
+      if (response.data && response.data.checkout_url) {
+        await ctx.reply(`💳 **Payment Initiated!**
+
+Please complete your payment on the following link:
+${response.data.checkout_url}
+
+**Payment Reference:** ${paymentSession.paymentRef}
+**Amount:** ${paymentSession.amount} birr
+
+**Once payment is successful, you will be redirected to the community.**`);
+        await ctx.answerCbQuery("✅ Payment initiated!");
+      } else {
+        console.error("Chapa payment initialization failed:", response.data);
+        await ctx.reply(`❌ **Payment initiation failed.** Please try again later. Error: ${response.data?.message || 'Unknown error'}`);
+        await ctx.answerCbQuery("❌ Payment initiation failed");
+      }
+    } catch (error) {
+      console.error("Error initiating payment:", error);
+      await ctx.reply(`❌ **Error initiating payment.** Please try again later. Error: ${error.message || 'Unknown error'}`);
+      await ctx.answerCbQuery("❌ Error initiating payment");
+    }
+  });
+
+  // Keep only ONE bot.launch() at the very end
+  bot.launch();
+
+  // Enable graceful stop
+  process.once("SIGINT", () => bot.stop("SIGINT"));
+  process.once("SIGTERM", () => bot.stop("SIGTERM"));
+
+  // Handle pre-checkout query and failed payments
+  bot.on("pre_checkout_query", async (ctx) => {
+    try {
+      const payload = ctx.preCheckoutQuery.invoice_payload;
+      
+      // Check if this is a community payment
+      if (payload.startsWith("community_")) {
+        const [, userTelegramId, mentorSlug, communityName, paymentRef] = payload.split("_");
+        
+        // Update subscription request status to FAILED
+        try {
+          const apiUrl = process.env.BaseUrl2 || "http://localhost:7071";
+          await axios.put(`${apiUrl}/api/v1/community-subscription-requests/status`, {
+            userId: userTelegramId,
+            mentorSlug: mentorSlug,
+            communityName: communityName,
+            status: 'FAILED',
+            paymentRef: paymentRef
+          });
+          console.log(`Subscription request status updated to FAILED for user: ${userTelegramId}`);
+        } catch (statusError) {
+          console.error("Error updating subscription request status to FAILED:", statusError);
+        }
+      }
+      
+      // Always approve the pre-checkout query
+      await ctx.answerPreCheckoutQuery(true);
+    } catch (error) {
+      console.error("Error handling pre-checkout query:", error);
+      // Still approve the query to avoid blocking the payment
+      await ctx.answerPreCheckoutQuery(true);
+    }
+  });
+
+  // Handle successful payment (simplified version)
+  bot.on("successful_payment", async (ctx) => {
+    const payload = ctx.message.successful_payment.invoice_payload;
+    const amountInCents = ctx.message.successful_payment.total_amount;
+    const amount = amountInCents / 100;
+    
+    console.log("Successful payment received:", { payload, amount });
+    
+    // Simple success message for now
+    await ctx.reply(`🎉 **Payment Successful!** Amount: ${amount} birr`);
+  });
+
+  // Add this simple test command
+  bot.command("hello", (ctx) => {
+    console.log("👋 /hello command executed");
+    ctx.reply("Hello! Bot is working!");
+  });
