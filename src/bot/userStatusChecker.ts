@@ -7,6 +7,8 @@ export interface UserRegistrationStatus {
   paymentStatus?: 'pending' | 'paid' | 'expired';
   needsRenewal?: boolean;
   userInfo?: {
+    amount: any;
+    communityName: any;
     fullName: string;
     phoneNumber: string;
     residence_location: string;
@@ -65,7 +67,14 @@ export async function checkUserRegistrationStatus(
         subscription: subRequest,
         paymentStatus,
         needsRenewal: isExpired,
-        userInfo
+        userInfo: {
+          communityName: (subRequest as any)?.communityName || '',
+          fullName: (prof as any)?.fullName || '',
+          phoneNumber: (prof as any)?.phoneNumber || '',
+          residence_location: (prof as any)?.residence_location || '',
+          email: (prof as any)?.email || '',
+          amount: (subRequest as any)?.amount || ''
+        }
       };
     }
 

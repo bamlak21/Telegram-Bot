@@ -11,6 +11,9 @@ import { handleSuccessfulPayment } from "./paymentHandler";
 import { checkUserRegistrationStatus, UserRegistrationStatus } from "./userStatusChecker";
 import { BotChat } from "../Model/BotChat.model";
 import { UserProfile } from "../Model/UserProfile.model";
+import { InlineKeyboardMarkup } from 'telegraf/types';
+import path from 'path';
+
 // import { pollingService } from "./pollingService";
 
 // Define storage variables
@@ -31,6 +34,7 @@ type EnrollmentStep =
   | 'awaiting_dob'
   | 'awaiting_residence'
   | 'awaiting_email'
+  | 'awaiting_payment_phone'
   | 'ready_for_payment';
 
 type EnrollmentSession = {
@@ -51,6 +55,10 @@ type EnrollmentSession = {
   telegramId?: string;
   telegramUsername?: string;
   txRef?: string;
+  profileUpdateMode?: boolean;
+  paymentMode?: 'pay' | 'continue' | 'renew';
+  pendingTxRef?: string;
+  paymentPhone?: string;
 };
 
 const enrollSessions = new Map<number, EnrollmentSession>();
@@ -85,7 +93,17 @@ const ETHIOPIAN_CITIES = [
 ];
 
 const isValidFullName = (name: string) => /^[A-Za-zÀ-ÖØ-öø-ÿ' ]{2,100}$/.test((name || '').trim());
-const isValidDob = (s: string) => /^\d{2}\/\d{2}\/\d{4}$/.test((s || '').trim());
+const isValidDob = (s: string) => {
+  const m = (s || '').trim().match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);
+  if (!m) return false;
+  const day = Number(m[1]);
+  const month = Number(m[2]);
+  const year = Number(m[3]);
+  if (day < 1 || day > 30) return false;
+  if (month < 1 || month > 13) return false;
+  if (year < 1900 || year > 2100) return false;
+  return true;
+};
 const isValidEmail = (s: string) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test((s || '').trim());
 
 const buildResidenceKeyboard = () => {
@@ -109,13 +127,19 @@ const contactKeyboard = {
 
 async function promptTerms(ctx: any, lang: Lang) {
   const txt = lang === 'en'
-    ? 'Please review the Terms of Service and press Accept to continue.'
-    : 'እባክዎ የአገልግሎት ውሎችን ይመልከቱ እና ለመቀጠል ተቀብለው ይጫኑ።';
+    ? 'Before we continue, please take a moment to review and accept our Terms of Service and Community Guidelines.'
+    : 'ከመቀጠልዎ በፊት እባክ የአገልግሎት ውላችንን እና የማህበረሰብ መመሪያዎችን አንብበው መስማማትዎን ያረጋግጡ።';
+  
   await ctx.reply(txt, {
     reply_markup: {
       inline_keyboard: [
-        [{ text: '📄 View Terms', url: TERMS_URL }],
-        [{ text: lang === 'en' ? '✅ Accept Terms' : '✅ ውሎችን ተቀብለዋል', callback_data: 'accept_terms' }],
+        [
+          { text: lang === 'en' ? '📄 View Terms of Service' : '📄 የአገልግሎት ውሎችን ይመልከቱ', url: TERMS_URL },
+          { text: lang === 'en' ? '📄 View Community Guidelines' : '📄 የማህበረሰብ መመሪያዎችን ይመልከቱ', url: GUIDELINES_URL }
+        ],
+        [
+          { text: lang === 'en' ? '✅ I Accept' : '✅ አንብቤ እስማማለሁ', callback_data: 'accept_terms_and_guidelines' }
+        ],
       ],
     },
   });
@@ -137,8 +161,8 @@ async function promptGuidelines(ctx: any, lang: Lang) {
 
 async function promptShareContact(ctx: any, lang: Lang) {
   const txt = lang === 'en'
-    ? '📱 **Step 1: Phone Number**\n\nPlease share your phone number using the button below to continue with your enrollment.'
-    : '📱 **ደረጃ 1: የስልክ ቁጥር**\n\nእባክዎ ምዝገባዎን ለመቀጠል በታች ያለውን አዝራር በመጠቀም የስልክ ቁጥርዎን ያካፍሉ።';
+    ? '📱 **Step 1: Phone Number**\n\nTo create or find your account, please share your contact information by tapping the button below.'
+    : '📱 **ደረጃ 1: የስልክ ቁጥር**\n\nአካውንት ለመፍጠር ወይም ለማግኘት፣ እባክዎ ከታች ያለውን ቁልፍ ተጭነው ስልክ ቁጥርዎን ያጋሩን።';
   
   await ctx.reply(txt, { 
     parse_mode: 'Markdown',
@@ -148,8 +172,8 @@ async function promptShareContact(ctx: any, lang: Lang) {
 
 async function promptFullName(ctx: any, lang: Lang) {
   const txt = lang === 'en'
-    ? '✏️ Please enter your full name (letters only, 2–100 chars).'
-    : '✏️ እባክዎ ሙሉ ስምዎን ያስገቡ (ፊደላት ብቻ, 2–100 ቁምፊ).';
+    ? '✏️ Please enter your full name.Please use letters only. No numbers or symbols are allowed.'
+    : '✏️ እባክዎ ሙሉ ስምዎን ያስገቡ። እባክዎ ፊደላትን ብቻ ይጠቀሙ። ቁጥሮችና ምልክቶች አይፈቀዱም።';
   await ctx.reply(txt, { reply_markup: { remove_keyboard: true } });
 }
 
@@ -167,20 +191,20 @@ async function promptGender(ctx: any, lang: Lang) {
 
 async function promptDob(ctx: any, lang: Lang) {
   const txt = lang === 'en'
-    ? 'Enter your Date of Birth in dd/mm/yyyy (Ethiopian calendar).'
-    : 'የትውልድ ቀንዎን dd/mm/yyyy (የኢትዮጵያ ዘመን) ቅርጽ ያስገቡ።';
+    ? 'What is your date of birth? Please use the Ethiopian Calendar and the format DD/MM/YYYY(for example, 12/03/2010).'
+    : 'የትውልድ ቀንዎን ያስገቡ። እባክዎ የኢትዮጵያ ዘመን አቆጣጠርን በቀን/ወር/ዓመት (ለምሳሌ፡ 12/03/2010) ቅርጸት ይጠቀሙ።';
   await ctx.reply(txt);
 }
 
 async function promptResidence(ctx: any, lang: Lang) {
-  const txt = lang === 'en' ? 'Select your residence location.' : 'የመኖሪያ ከተማዎን ይምረጡ።';
+  const txt = lang === 'en' ? 'Where are you currently located? Please choose your city from the list.Free text is not allowed.' : 'የመኖሪያ ከተማዎን ከዝርዝሩ ውስጥ ይምረጡ። ከዝርዝሩ ውጪ በጽሁፍ ማስገባት አይቻልም።';
   await ctx.reply(txt, { reply_markup: buildResidenceKeyboard() });
 }
 
 async function promptEmail(ctx: any, lang: Lang) {
   const txt = lang === 'en'
     ? 'Enter your email (optional). Send "skip" to continue.'
-    : 'ኢሜልዎን ያስገቡ (አማራጭ). ለመቀጠል "skip" ይላኩ።';
+    : 'ከተመቸዎት የኢሜይል አድራሻዎን ያስገቡ። ይህ አስገዳጅ አይደለም። እባክዎ ትክክለኛ የኢሜይል ቅርጸት ይጠቀሙ (ለምሳሌ: example@mail.com). ካልፈለጉ "skip" ይላኩ።';
   await ctx.reply(txt);
 }
 
@@ -207,6 +231,43 @@ async function continueEnrollment(ctx: any) {
 
   console.log(`📋 Continue enrollment for user ${uid}, current step: ${s.step}`);
 
+  // If this is a one-off profile update flow, short-circuit to show profile + update menu
+  if (s.profileUpdateMode && !s.communityId) {
+    // Reset update flag and render profile/update menu
+    s.profileUpdateMode = false;
+    enrollSessions.set(uid, s);
+
+    const useAm = (lang === 'am');
+    const profileMsg = useAm
+      ? `👤 መገለጫ\n\nሙሉ ስም: ${s.fullName || 'አይገኝም'}\nስልክ: ${s.phone || 'አይገኝም'}\nየቴሌግራም ዩዘር: ${s.telegramUsername || 'አይገኝም'}\nአካባቢ: ${s.residence || 'አይገኝም'}\nኢሜል: ${s.email || 'አይገኝም'}\nጾታ: ${s.gender || 'አይገኝም'}\nየትውልድ ቀን: ${s.dob || 'አይገኝም'}\nቋንቋ: ${s.language || 'en'}`
+      : `👤 Profile\n\nFull name: ${s.fullName || 'N/A'}\nPhone: ${s.phone || 'N/A'}\nUsername: ${s.telegramUsername || 'N/A'}\nLocation: ${s.residence || 'N/A'}\nEmail: ${s.email || 'N/A'}\nGender: ${s.gender || 'N/A'}\nDOB: ${s.dob || 'N/A'}\nLanguage: ${s.language || 'en'}`;
+
+    await ctx.reply(profileMsg);
+
+    const updateKeyboard = {
+      inline_keyboard: [
+        [
+          { text: useAm ? '📱 ስልክ አዘምን' : '📱 Update Phone', callback_data: 'update_phone' },
+          { text: useAm ? '✏️ ስም አዘምን' : '✏️ Update Name', callback_data: 'update_full_name' }
+        ],
+        [
+          { text: useAm ? '⚧ ጾታ አዘምን' : '⚧ Update Gender', callback_data: 'update_gender' },
+          { text: useAm ? '🎂 የትውልድ ቀን አዘምን' : '🎂 Update DOB', callback_data: 'update_dob' }
+        ],
+        [
+          { text: useAm ? '🏙️ አካባቢ አዘምን' : '🏙️ Update Residence', callback_data: 'update_residence' },
+          { text: useAm ? '📧 ኢሜል አዘምን' : '📧 Update Email', callback_data: 'update_email' }
+        ],
+        [
+          { text: useAm ? '🏠 ወደ ማህበረሰቦች' : '🏠 Back to Communities', callback_data: 'back_to_communities' }
+        ]
+      ]
+    } as InlineKeyboardMarkup;
+
+    await ctx.reply(useAm ? 'ምን ማዘመን ትፈልጋሉ?' : 'What would you like to update?', { reply_markup: updateKeyboard });
+    return;
+  }
+
   if (!s.language) {
     s.step = 'awaiting_language';
     enrollSessions.set(uid, s);
@@ -214,17 +275,10 @@ async function continueEnrollment(ctx: any) {
     return;
   }
 
-  if (!s.termsAccepted) {
+  if (!s.termsAccepted || !s.guidelinesAccepted) {
     s.step = 'awaiting_terms';
     enrollSessions.set(uid, s);
     await promptTerms(ctx, lang);
-    return;
-  }
-
-  if (!s.guidelinesAccepted) {
-    s.step = 'awaiting_guidelines';
-    enrollSessions.set(uid, s);
-    await promptGuidelines(ctx, lang);
     return;
   }
 
@@ -270,179 +324,99 @@ async function continueEnrollment(ctx: any) {
     return;
   }
 
-  // All required fields collected, show payment
-  await promptPayment(ctx, lang, s);
+  // All required fields collected
+  await upsertUserProfileFromSession(uid, s);
+
+  if (s.communityId && !s.profileUpdateMode) {
+    // In enrollment flow: show payment
+    await promptPayment(ctx, lang, s);
+  } else {
+    // Profile-only or update flow: show summary and update menu
+    const useAm = (lang === 'am');
+    const profileMsg = useAm
+      ? `👤 መገለጫ\n\nሙሉ ስም: ${s.fullName || 'አይገኝም'}\nስልክ: ${s.phone || 'አይገኝም'}\nየቴሌግራም ዩዘር: ${s.telegramUsername || 'አይገኝም'}\nአካባቢ: ${s.residence || 'አይገኝም'}\nኢሜል: ${s.email || 'አይገኝም'}\nጾታ: ${s.gender || 'አይገኝም'}\nየትውልድ ቀን: ${s.dob || 'አይገኝም'}\nቋንቋ: ${s.language || 'en'}`
+      : `👤 Profile\n\nFull name: ${s.fullName || 'N/A'}\nPhone: ${s.phone || 'N/A'}\nUsername: ${s.telegramUsername || 'N/A'}\nLocation: ${s.residence || 'N/A'}\nEmail: ${s.email || 'N/A'}\nGender: ${s.gender || 'N/A'}\nDOB: ${s.dob || 'N/A'}\nLanguage: ${s.language || 'en'}`;
+
+    await ctx.reply(profileMsg);
+
+    const updateKeyboard = {
+      inline_keyboard: [
+        [
+          { text: useAm ? '📱 ስልክ አዘምን' : '📱 Update Phone', callback_data: 'update_phone' },
+          { text: useAm ? '✏️ ስም አዘምን' : '✏️ Update Name', callback_data: 'update_full_name' }
+        ],
+        [
+          { text: useAm ? '⚧ ጾታ አዘምን' : '⚧ Update Gender', callback_data: 'update_gender' },
+          { text: useAm ? '🎂 የትውልድ ቀን አዘምን' : '🎂 Update DOB', callback_data: 'update_dob' }
+        ],
+        [
+          { text: useAm ? '🏙️ አካባቢ አዘምን' : '🏙️ Update Residence', callback_data: 'update_residence' },
+          { text: useAm ? '📧 ኢሜል አዘምን' : '📧 Update Email', callback_data: 'update_email' }
+        ],
+        [
+          { text: useAm ? '🏠 ወደ ማህበረሰቦች' : '🏠 Back to Communities', callback_data: 'back_to_communities' }
+        ]
+      ]
+    } as InlineKeyboardMarkup;
+
+    await ctx.reply(useAm ? 'ምን ማዘመን ትፈልጋሉ?' : 'What would you like to update?', { reply_markup: updateKeyboard });
+  }
 }
 
 // Define helper functions
 async function showCommunities(ctx: any, language: string) {
   try {
-    // Fetch all available communities
     const apiUrl = process.env.API_URL;
     const response = await axios.get(`${apiUrl}/api/v1/telegramCommunity/with-mentor`);
-    
+
     if (Array.isArray(response.data) && response.data.length > 0) {
       const communities = response.data;
-      
-      // Debug logging
-      console.log('Communities count:', communities.length);
-      console.log('First community raw:', communities[0]);
-      
-      if (language === "en") {
-        // English welcome message
-        const welcomeMessage = `🎉 **Welcome to Tigat Premium Bot!**
 
-Here are the available private communities you can join:
-
-**Total Communities:** ${communities.length}`;
-        
-        await ctx.reply(welcomeMessage, { parse_mode: 'Markdown' });
-      } else {
-        // Amharic welcome message
-        const welcomeMessage = `🎉 **ወደ Tigat Premium Bot እንኳን በደህና መጡ!**
-
-እነዚህ ሊቀላቀሉ የሚችሉ የግል ማህበረሰቦች ናቸው:
-
-**ጠቅላላ ማህበረሰቦች:** ${communities.length}`;
-        
-        await ctx.reply(welcomeMessage, { parse_mode: 'Markdown' });
-      }
-      
-      // Send each community with image and join button
-      for (let i = 0; i < communities.length; i++) {
-        const community = communities[i];
-        
-        // Normalize fields per provided service
-        const id = community.communityId || community._id || community.id;
-        const name = community.communityName || community.name || 'Community';
-        const price = community.price ?? '';
-        const imagePath = community.photo || community.image || community.photoUrl;
-        const imageUrl = imagePath
-          ? (imagePath.startsWith('http') ? imagePath : `${apiUrl}${imagePath}`)
-          : undefined;
-        const mentorName = community.mentorName || community.mentor?.name || 'Unknown Mentor';
-        
-        // Debug logging
-        console.log('Community normalized:', { id, name, price, imageUrl, mentorName, groupId: community.groupId });
-        
-        // Prepare community message
-        let communityMessage = '';
-        let keyboard = {};
-        
-        if (language === "en") {
-          // English community message
-          communityMessage = `🏛️ **${name}**
-
-👨‍🏫 **Mentor:** ${mentorName}
-💰 **Price:** ${price} birr`;
-          
-          keyboard = {
-            inline_keyboard: [
-              [
-                {
-                  text: `🚀 Join ${name}`,
-                  callback_data: `join_community_${id}` // Use community ID instead
-                }
-              ]
-            ]
-          };
-        } else {
-          // Amharic community message
-          communityMessage = `🏛️ **${name}**
-
-👨‍🏫 **መምህር:** ${mentorName}
-💰 **ዋጋ:** ${price} ብር`;
-          
-          keyboard = {
-            inline_keyboard: [
-              [
-                {
-                  text: `🚀 ${name} ላይ ተቀላቀል`,
-                  callback_data: `join_community_${id}` // Use community ID instead
-                }
-              ]
-            ]
-          };
+      // Build 2-column inline keyboard
+      const keyboard: any[] = [];
+      for (let i = 0; i < communities.length; i += 2) {
+        const row: any[] = [];
+        const c1 = communities[i];
+        const id1 = c1.communityId || c1._id || c1.id;
+        const name1 = c1.communityName || c1.name || 'Community';
+        row.push({ text: `🏛️ ${name1}`, callback_data: `view_community_${id1}` });
+        if (i + 1 < communities.length) {
+          const c2 = communities[i + 1];
+          const id2 = c2.communityId || c2._id || c2.id;
+          const name2 = c2.communityName || c2.name || 'Community';
+          row.push({ text: `🏛️ ${name2}`, callback_data: `view_community_${id2}` });
         }
-        
-        // Send community with image if available
-        if (imageUrl) {
-          try {
-            // Send photo with caption
-            await ctx.replyWithPhoto(imageUrl, {
-              caption: communityMessage,
-              parse_mode: 'Markdown',
-              reply_markup: keyboard
-            });
-            
-            console.log(`✅ Sent community ${name} with image: ${imageUrl}`);
-          } catch (photoError) {
-            console.error('Error sending photo, falling back to text message:', photoError);
-            // Fallback to text message if photo fails
-            await ctx.reply(communityMessage, {
-              parse_mode: 'Markdown',
-              reply_markup: keyboard
-            });
-          }
-        } else {
-          // No image, send text message only
-          await ctx.reply(communityMessage, {
-            parse_mode: 'Markdown',
-            reply_markup: keyboard
-          });
-        }
+        keyboard.push(row);
       }
-      
+
+      // Send image without caption; attach keyboard
+      try {
+        await ctx.replyWithPhoto(
+          { source: './public/assets/logo.png' },
+          { reply_markup: { inline_keyboard: keyboard } }
+        );
+      } catch {
+        // Invisible fallback text so only the buttons show
+        await ctx.reply('\u2063', { reply_markup: { inline_keyboard: keyboard } });
+      }
     } else {
-      // No communities available
       if (language === "en") {
         await ctx.reply(`🎉 **Welcome to Tigat Premium Bot!**
 
 Currently, there are no private communities available.
 
-**To access a community:**
-1. Type: /join_community COMMUNITY_NAME
-2. Or paste the community name directly
-3. I'll help you access it immediately!
-
-**Need help?** Type /help for more information.`);
+**Need help?** Type /help for more information.`, { parse_mode: 'Markdown' });
       } else {
         await ctx.reply(`🎉 **ወደ Tigat Premium Bot እንኳን በደህና መጡ!**
 
 አሁን ምንም የግል ማህበረሰቦች አይገኙም።
 
-**ማህበረሰብ ለመድረስ:**
-1. ይፃፉ: /join_community የማህበረሰብ_ስም
-2. ወይም የማህበረሰብ ስምን በቀጥታ ያስገቡ
-3. ወዲያውኑ እረዳዎታለሁ!
-
-**እርዳታ ያስፈልግዎታል?** /help ይፃፉ።`);
+**እርዳታ ያስፈልግዎታል?** /help ይፃፉ።`, { parse_mode: 'Markdown' });
       }
     }
-    
   } catch (error) {
     console.error("Error fetching communities:", error);
-    
-    // Fallback message if API fails
-    if (language === "en") {
-      await ctx.reply(`🎉 **Welcome to Tigat Premium Bot!**
-
-**To access a private community:**
-1. Type: /join_community COMMUNITY_NAME
-2. Or paste the community name directly
-3. I'll help you access it immediately!
-
-**Need help?** Type /help for more information.`);
-    } else {
-      await ctx.reply(`🎉 **ወደ Tigat Premium Bot እንኳን በደህና መጡ!**
-
-**የግል ማህበረሰብ ለመድረስ:**
-1. ይፃፉ: /join_community የማህበረሰብ_ስም
-2. ወይም የማህበረሰብ ስምን በቀጥታ ያስገቡ
-3. ወዲያውኑ እረዳዎታለሁ!
-
-**እርዳታ ያስፈልግዎታል?** /help ይፃፉ።`);
-    }
+    await ctx.reply(language === "en" ? `⚠️ Failed to load communities. Please try again later.` : `⚠️ ማህበረሰቦችን መጫን አልተቻለም። እባክዎ ቆየት ብለው ይሞክሩ።`);
   }
 }
 
@@ -468,9 +442,123 @@ mongoose.connect(ServerConfig.MongoUrl)
 // Add this at the very beginning of your bot file, right after imports
 console.log("🚀 Bot file loaded, setting up handlers...");
 
+// Add helper function for handling phone number changes (only once)
+async function handlePhoneNumberChange(telegramId: number, phone: string) {
+  const newTgId = String(telegramId);
+  const phoneNorm = String(phone);
+  
+  // Find existing profiles
+  const byTelegramId = await UserProfile.findOne({ telegramId: newTgId });
+  const byPhone = await UserProfile.findOne({ phoneNumber: phoneNorm });
+  
+  if (byTelegramId && byPhone && String(byTelegramId._id) !== String(byPhone._id)) {
+    // Two different profiles exist - merge them
+    console.log(`🔄 Merging profiles: Telegram ID changed from ${byPhone.telegramId} to ${newTgId}`);
+    
+    // Merge data into the Telegram ID profile
+    byTelegramId.phoneNumber = byPhone.phoneNumber || byTelegramId.phoneNumber;
+    byTelegramId.fullName = byTelegramId.fullName || byPhone.fullName;
+    byTelegramId.gender = byTelegramId.gender || byPhone.gender;
+    byTelegramId.dob = byTelegramId.dob || byPhone.dob;
+    byTelegramId.residence_location = byTelegramId.residence_location || byPhone.residence_location;
+    byTelegramId.email = byTelegramId.email || byPhone.email;
+    byTelegramId.language = byTelegramId.language || byPhone.language;
+    byTelegramId.telegramUsername = byTelegramId.telegramUsername || byPhone.telegramUsername;
+    
+    await byTelegramId.save();
+    
+    // Update all SubscriptionRequests to use new Telegram ID
+    await SubscriptionRequest.updateMany(
+      { userId: byPhone.telegramId },
+      { userId: newTgId }
+    );
+    
+    // Delete old profile
+    await UserProfile.deleteOne({ _id: byPhone._id });
+    
+    console.log(`✅ Profile merged successfully for phone ${phoneNorm}`);
+    return byTelegramId;
+  } else if (byPhone && !byTelegramId) {
+    // Only phone profile exists - update to new Telegram ID
+    byPhone.telegramId = newTgId;
+    await byPhone.save();
+    
+    // Update SubscriptionRequests
+    await SubscriptionRequest.updateMany(
+      { userId: byPhone.telegramId },
+      { userId: newTgId }
+    );
+    
+    console.log(`🔄 Updated Telegram ID for existing phone profile`);
+    return byPhone;
+  } else if (byTelegramId) {
+    // Only Telegram ID profile exists - update phone
+    byTelegramId.phoneNumber = phoneNorm;
+    await byTelegramId.save();
+    return byTelegramId;
+  } else {
+    // No existing profile - create new
+    return await UserProfile.findOneAndUpdate(
+      { telegramId: newTgId },
+      { telegramId: newTgId, phoneNumber: phoneNorm },
+      { upsert: true, new: true }
+    );
+  }
+}
+
+// Add function to check and update user profile on start (only once)
+async function checkAndUpdateUserProfile(telegramId: number, username?: string) {
+  const tgId = String(telegramId);
+  
+  try {
+    // Check if user has existing profile by Telegram ID
+    let profile = await UserProfile.findOne({ telegramId: tgId });
+    
+    if (profile) {
+      // Update username if it changed
+      const telegramUsername = username ? `@${username}` : '';
+      if (profile.telegramUsername !== telegramUsername) {
+        profile.telegramUsername = telegramUsername;
+        await profile.save();
+        console.log(`🔄 Updated username for user ${tgId}: ${telegramUsername}`);
+      }
+      return profile;
+    }
+    
+    // Check if there are any orphaned profiles with same phone but different Telegram ID
+    // This handles the case where user deleted and recreated Telegram account
+    const orphanedProfiles = await UserProfile.find({ 
+      telegramId: { $ne: tgId },
+      phoneNumber: { $exists: true, $ne: '' }
+    });
+    
+    if (orphanedProfiles.length > 0) {
+      console.log(`🔍 Found ${orphanedProfiles.length} potential orphaned profiles for user ${tgId}`);
+      // For now, just log - user will need to share contact to merge
+    }
+    
+    return null;
+  } catch (error) {
+    console.error(`❌ Error checking user profile for ${tgId}:`, error);
+    return null;
+  }
+}
+
 // Register command handlers
 bot.command("start", async (ctx) => {
   console.log("🚀 /start command executed by user:", ctx.from?.id);
+
+  const userTelegramId = ctx.from?.id;
+  if (userTelegramId) {
+    // Always check and update user profile on start
+    const profile = await checkAndUpdateUserProfile(userTelegramId, ctx.from?.username);
+    
+    if (profile) {
+      // Set user language from existing profile
+      userLanguages.set(userTelegramId, (profile.language as 'en' | 'am') || 'en');
+      console.log(`👤 Found existing profile for user ${userTelegramId}, language: ${profile.language}`);
+    }
+  }
 
   // Deep-link payment flow support: /start userId_courseId
   const text = ctx.message?.text || "";
@@ -496,7 +584,6 @@ bot.command("start", async (ctx) => {
     }
 
     // Proceed with existing photo+invoice flow
-    const userTelegramId = ctx.from?.id;
     await sendGroupPhotoAndInvoice({
       ctx,
       groupId: checkUser.groupId,
@@ -511,7 +598,7 @@ bot.command("start", async (ctx) => {
   }
 
   // Default: show language selection
-  await ctx.reply("🌍 **Welcome! Please select your language:**", {
+  await ctx.reply("🌍 **Welcome! To get started, please select your preferred language.**\n\nእንኳን በደህና መጡ! ለመጀመር እባክዎ የሚፈልጉትን ቋንቋ ይምረጡ።", {
     parse_mode: 'Markdown',
     reply_markup: {
       inline_keyboard: [
@@ -577,6 +664,7 @@ bot.command("polling_status", async (ctx) => {
 
 // Register action handlers
 bot.action("language_en", async (ctx) => {
+  await ctx.answerCbQuery("✅ Language set to English");
   const userTelegramId = ctx.from?.id;
   if (userTelegramId) {
     userLanguages.set(userTelegramId, "en");
@@ -585,17 +673,17 @@ bot.action("language_en", async (ctx) => {
       s.language = 'en';
       s.step = 'awaiting_terms'; // Add this line to update the step
       enrollSessions.set(userTelegramId, s);
-      await ctx.answerCbQuery("✅ Language set to English");
       await continueEnrollment(ctx);
       return;
     }
   }
-  await ctx.reply("🇺🇸 **Language set to English!**\n\nWelcome to Tigat Premium Bot! Let me show you the available communities.");
+  await ctx.reply("🇺🇸 **Language set to English!**\n\nLet me show you the available communities.");
   await showCommunities(ctx, "en");
   await ctx.answerCbQuery("✅ Language set to English");
 });
 
 bot.action("language_am", async (ctx) => {
+  await ctx.answerCbQuery("✅ ቋንቋ ወደ አማርኛ ተቀይሯል");
   const userTelegramId = ctx.from?.id;
   if (userTelegramId) {
     userLanguages.set(userTelegramId, "am");
@@ -604,17 +692,111 @@ bot.action("language_am", async (ctx) => {
       s.language = 'am';
       s.step = 'awaiting_terms'; // Add this line to update the step
       enrollSessions.set(userTelegramId, s);
-      await ctx.answerCbQuery("✅ ቋንቋ ወደ አማርኛ ተቀይሯል");
       await continueEnrollment(ctx);
       return;
     }
   }
-  await ctx.reply("🇪🇹 **ቋንቋ ወደ አማርኛ ተቀይሯል!**\n\nወደ Tigat Premium Bot እንኳን በደህና መጡ! የሚገኙ ማህበረሰቦችን እንድያዩ ያድርጉኝ።");
+  await ctx.reply("🇪🇹 **ቋንቋ ወደ አማርኛ ተቀይሯል!**\n\nየሚገኙ ማህበረሰቦችን እንድያዩ ያድርጉኝ።");
   await showCommunities(ctx, "am");
   await ctx.answerCbQuery("✅ ቋንቋ ወደ አማርኛ ተቀይሯል");
 });
 
-// Enhanced join community handler with user status check
+bot.action('back_to_list', async (ctx) => {
+  const userTelegramId = ctx.from?.id;
+  const userLanguage = userTelegramId ? userLanguages.get(userTelegramId) || "en" : "en";
+
+  await showCommunities(ctx, userLanguage);
+  await ctx.answerCbQuery('✅ Returned to list');
+});
+bot.action(/^view_community_(.+)$/, async (ctx) => {
+  const communityId = ctx.match![1];
+  const userTelegramId = ctx.from?.id;
+  const userLang = userTelegramId ? userLanguages.get(userTelegramId) || 'en' : 'en';
+
+  try {
+    const apiUrl = process.env.API_URL;
+    const response = await axios.get(`${apiUrl}/api/v1/telegramCommunity/with-mentor`);
+    const list = Array.isArray(response.data) ? response.data : [];
+    const community = list.find((c: any) => (
+      c.communityId === communityId || c._id === communityId || c.id === communityId
+    ));
+
+    if (!community) {
+      await ctx.reply(userLang === 'en' ? '❌ Community not found.' : '❌ ማህበረሰብ አልተገኘም።');
+      await ctx.answerCbQuery('❌ Not found');
+      return;
+    }
+
+    const name = community.communityName || community.name || 'Community';
+    const price = community.price ?? '';
+    const mentorName = community.mentorName || community.mentor?.name || 'Unknown Mentor';
+    const rawDescription = community.description || '';
+    const description = String(rawDescription).replace(/([_*\[\]\(\)~`>#+\-=|{}\.\!])/g, '\\$1');
+    const imagePath = community.photo || community.image || community.photoUrl;
+    const imageUrl = imagePath
+      ? (imagePath.startsWith('http') ? imagePath : `${apiUrl}${imagePath}`)
+      : undefined;
+
+    let detailMessage = '';
+    let keyboard: InlineKeyboardMarkup;
+
+    if (userLang === 'en') {
+      detailMessage = `🏛️ **${name}**
+📝 **Description:** ${description}
+👨‍🏫 **Mentor:** ${mentorName}
+💰 **Price:** ${price} birr`;
+
+      keyboard = {
+        inline_keyboard: [
+          [{ text: `🚀 Join ${name}`, callback_data: `join_community_${communityId}` }],
+          [{ text: '🔙 Back to List', callback_data: 'back_to_list' }]
+        ]
+      };
+    } else {
+      detailMessage = `🏛️ **${name}**
+📝 **መግለጫ:** ${description}
+👨‍🏫 **መምህር:** ${mentorName}
+💰 **ዋጋ:** ${price} ብር`;
+
+      keyboard = {
+        inline_keyboard: [
+          [{ text: `🚀 ${name} ላይ ተቀላቀል`, callback_data: `join_community_${communityId}` }],
+          [{ text: '🔙 ወደ ዝርዝር ተመለስ', callback_data: 'back_to_list' }]
+        ]
+      };
+    }
+
+    if (imageUrl) {
+      try {
+        await ctx.replyWithPhoto(imageUrl, {
+          caption: detailMessage,
+          parse_mode: 'Markdown',
+          reply_markup: keyboard
+        });
+      } catch (photoError) {
+        console.error('Error sending photo:', photoError);
+        await ctx.reply(detailMessage, {
+          parse_mode: 'Markdown',
+          reply_markup: keyboard
+        });
+      }
+    } else {
+      await ctx.reply(detailMessage, {
+        parse_mode: 'Markdown',
+        reply_markup: keyboard
+      });
+    }
+
+    await ctx.answerCbQuery('✅ Community details loaded');
+
+  } catch (error) {
+    console.error('❌ Error viewing community:', error);
+    await ctx.reply(userLang === 'en' ? '⚠️ Error loading details.' : '⚠️ ዝርዝር መጫን አልተቻለም።');
+    await ctx.answerCbQuery('❌ Error');
+  }
+});
+
+// Enhanced join community handler with multiple pending communities support
 bot.action(/^join_community_(.+)$/, async (ctx) => {
   const communityId = ctx.match![1];
   const userTelegramId = ctx.from?.id;
@@ -629,11 +811,28 @@ bot.action(/^join_community_(.+)$/, async (ctx) => {
     if (userStatus.isRegistered && userStatus.userInfo) {
       console.log(`👤 User ${userTelegramId} already registered, status: ${userStatus.paymentStatus}`);
       
+      // Fetch fresh UserProfile data to ensure we have complete info
+      let userInfo = userStatus.userInfo;
+      try {
+        const freshProfile = await UserProfile.findOne({ telegramId: String(userTelegramId) });
+        if (freshProfile) {
+          userInfo = {
+            fullName: (freshProfile as any)?.fullName || userInfo.fullName || '',
+            phoneNumber: (freshProfile as any)?.phoneNumber || userInfo.phoneNumber || '',
+            residence_location: (freshProfile as any)?.residence_location || userInfo.residence_location || '',
+            email: (freshProfile as any)?.email || userInfo.email || '',
+            amount: userInfo.amount,
+            communityName: userInfo.communityName
+          };
+        }
+      } catch (e) {
+        console.warn('Failed to fetch fresh UserProfile:', e);
+      }
+      
       // Display user registration info
-      const userInfo = userStatus.userInfo;
-      const statusMessage = userLang === 'en' 
-        ? `👤 **Your Registration Details**\n\n**Full Name:** ${userInfo.fullName}\n**Phone:** ${userInfo.phoneNumber}\n**Location:** ${userInfo.residence_location}\n**Email:** ${userInfo.email || 'Not provided'}\n\n**Payment Status:** ${userStatus.paymentStatus?.toUpperCase()}`
-        : `👤 **የእርስዎ ምዝገባ ዝርዝር**\n\n**ሙሉ ስም:** ${userInfo.fullName}\n**ስልክ:** ${userInfo.phoneNumber}\n**አድራሻ:** ${userInfo.residence_location}\n**ኢሜል:** ${userInfo.email || 'አልተሰጠም'}\n\n**የክፍያ ሁኔታ:** ${userStatus.paymentStatus?.toUpperCase()}`;
+      const statusMessage = userLang === 'en'
+        ? `👤 **Your Pending Community Details**\n\n**Full Name:** ${userInfo.fullName}\n**Phone:** ${userInfo.phoneNumber}\n**Location:** ${userInfo.residence_location}\n**Email:** ${userInfo.email || 'Not provided'}\n**Community:** ${userInfo.communityName}\n**Amount:** ${userInfo.amount} birr\n**Payment Status:** ${userStatus.paymentStatus?.toUpperCase()}`
+        : `👤 **የእርስዎ ምዝገባ ዝርዝር**\n\n**ሙሉ ስም:** ${userInfo.fullName}\n**ስልክ:** ${userInfo.phoneNumber}\n**አድራሻ:** ${userInfo.residence_location}\n**ኢሜል:** ${userInfo.email || 'አልተሰጠም'}\n**ማህበር:** ${userInfo.communityName}\n**መጠን:** ${userInfo.amount} ብር\n**የክፍያ ሁኔታ:** ${userStatus.paymentStatus?.toUpperCase()}`;
 
       // Create appropriate buttons based on payment status
       let keyboard: any = { inline_keyboard: [] };
@@ -713,6 +912,31 @@ bot.action(/^join_community_(.+)$/, async (ctx) => {
         telegramId: String(userTelegramId),
         telegramUsername: username,
       });
+    // Prefill enrollment from existing UserProfile so we don't ask again
+    try {
+      const s = enrollSessions.get(userTelegramId)!;
+      const prof = await UserProfile.findOne({ telegramId: String(userTelegramId) });
+
+      if (prof) {
+        s.language = (s.language as Lang) || ((prof as any).language as Lang) || 'en';
+        s.phone = s.phone || (prof as any).phoneNumber || '';
+        s.fullName = s.fullName || (prof as any).fullName || '';
+        s.gender = s.gender || (prof as any).gender || '';
+        s.dob = s.dob || (prof as any).dob || '';
+        s.residence = s.residence || (prof as any).residence_location || '';
+        s.email = s.email === undefined ? ((prof as any).email || '') : s.email;
+        s.telegramId = s.telegramId || String(userTelegramId);
+        s.telegramUsername = s.telegramUsername || ((prof as any).telegramUsername || (ctx.from?.username ? `@${ctx.from.username}` : ''));
+
+        s.termsAccepted = true;
+        s.guidelinesAccepted = true;
+
+        enrollSessions.set(userTelegramId, s);
+      }
+    } catch (e) {
+      console.warn('Prefill from UserProfile failed', e);
+    }
+
     }
     // Proceed
     await continueEnrollment(ctx);
@@ -733,7 +957,6 @@ bot.action(/^continue_payment_(.+)$/, async (ctx) => {
   console.log(`💳 Continue payment for user ${userTelegramId}, community ${communityId}`);
   
   try {
-    // Get existing subscription request
     const subRequest = await SubscriptionRequest.findOne({
       userId: String(userTelegramId),
       communityId: communityId
@@ -745,7 +968,6 @@ bot.action(/^continue_payment_(.+)$/, async (ctx) => {
       return;
     }
 
-    // Fetch community data
     const apiUrl = process.env.API_URL;
     const response = await axios.get(`${apiUrl}/api/v1/telegramCommunity/with-mentor`);
     const list = Array.isArray(response.data) ? response.data : [];
@@ -759,70 +981,28 @@ bot.action(/^continue_payment_(.+)$/, async (ctx) => {
       return;
     }
 
-    // Fetch user profile for provider data
-    const userProfile = await UserProfile.findOne({ telegramId: String(userTelegramId) });
-    const profPhone = (userProfile as any)?.phoneNumber || '';
-    const profName = (userProfile as any)?.fullName || '';
-
-    const priceInCents = Math.round(Number(community.price || 0) * 100);
-    // Generate tx_ref locally for Telegram payment
-    const nameParts = (profName || '').trim().split(/\s+/);
-    const firstName = nameParts[0] || 'User';
-    const lastName = nameParts.slice(1).join(' ') || 'Telegram';
-    const desiredTxRef = subRequest.tx_ref || `continue_${communityId}_${userTelegramId}_${Date.now()}`;
-    const txRef = desiredTxRef;
-    
-    // Ensure DB has a record with the FINAL tx_ref before sending invoice
+    // Ensure session exists
+    const s = enrollSessions.get(userTelegramId!) || ({ step: 'awaiting_language' } as EnrollmentSession);
+    s.communityId = communityId;
+    s.communityName = community.communityName;
+    s.price = community.price;
+    s.community = community;
+    s.telegramId = String(userTelegramId);
+    // Prefill phone/fullName from profile
     try {
-      await SubscriptionRequest.findOneAndUpdate(
-        { userId: String(userTelegramId), communityId: communityId },
-        { tx_ref: txRef, paymentStatus: 'pending' as any, status: 'active' as any, amount: community.price },
-        { upsert: true, new: true }
-      );
-      console.log('🔄 Synchronized SubscriptionRequest with final tx_ref for continue_payment:', txRef);
-    } catch (syncErr) {
-      console.error('❌ Failed to sync SubscriptionRequest tx_ref (continue_payment):', syncErr);
-    }
+      const prof = await UserProfile.findOne({ telegramId: String(userTelegramId) });
+      if (prof) {
+        s.phone = s.phone || (prof as any).phoneNumber || '';
+        s.fullName = s.fullName || (prof as any).fullName || '';
+        s.termsAccepted = true; s.guidelinesAccepted = true;
+      }
+    } catch {}
+    s.step = 'awaiting_payment_phone';
+    s.paymentMode = 'continue';
+    enrollSessions.set(userTelegramId!, s);
 
-    const providerData2 = {
-      phone: profPhone,
-      fullName: profName,
-      tx_ref: txRef,
-    };
-    console.log('🧾 Sending Telegram invoice (continue_payment)', { txRef, priceInCents, providerData: providerData2 });
-    
-    await ctx.replyWithInvoice({
-      title: `${community.communityName}`,
-      description: `Continue payment to join ${community.communityName}`,
-      payload: txRef,
-      provider_token: process.env.CHAPA_PROVIDER_TOKEN || "<YOUR_CHAPA_PROVIDER_TOKEN>",
-      currency: "ETB",
-      prices: [{ label: "Community Access", amount: priceInCents }],
-      start_parameter: "pay",
-      need_phone_number: true,
-      send_phone_number_to_provider: true,
-      provider_data: JSON.stringify(providerData2),
-    });
-
-    await ctx.answerCbQuery('✅ Payment invoice sent');
-    await ctx.reply(userLang === 'en' ? '💳 Payment invoice generated. Please complete your payment.' : '💳 ክፍያ ደረሰኝ ተፈጥሯል። እባክዎን ክፍያውን ያጠናቅቅ።');
-    
-    // Polling disabled; relying on Telegram successful_payment only
-    const enrollSession: EnrollmentSession = {
-      step: 'ready_for_payment',
-      language: userLang as Lang,
-      fullName: profName,
-      phone: profPhone,
-      communityId: communityId,
-      communityName: community.communityName,
-      price: community.price,
-      community: community,
-      telegramId: String(userTelegramId),
-      telegramUsername: ctx.from?.username ? `@${ctx.from.username}` : '',
-      txRef: txRef
-    };
-    
-    // polling disabled
+    await ctx.answerCbQuery('');
+    await promptConfirmPaymentPhone(ctx, userLang as Lang, s.phone || '');
   } catch (error) {
     console.error('❌ Error in continue payment:', error);
     await ctx.reply('⚠️ Error processing payment. Please try again.');
@@ -882,7 +1062,7 @@ bot.action(/^renew_community_(.+)$/, async (ctx) => {
     try {
       await SubscriptionRequest.findOneAndUpdate(
         { userId: String(userTelegramId), communityId: communityId },
-        { tx_ref: txRef, paymentStatus: 'pending' as any, status: 'active' as any, amount: community.price },
+        { tx_ref: txRef, paymentStatus: 'pending' as any, status: 'active' as any, amount: community.price, communityName: community.communityName },
         { upsert: true, new: true }
       );
       console.log('🔄 Synchronized SubscriptionRequest with final tx_ref for renew_community:', txRef);
@@ -936,66 +1116,65 @@ bot.action(/^renew_community_(.+)$/, async (ctx) => {
   }
 });
 
-// FIXED: Contact handler (Share Contact button) - removed incorrect answerCbQuery call
+// Add helper function for handling phone number changes
+// Update the contact handler
 bot.on(message('contact'), async (ctx) => {
   const uid = ctx.from?.id as number | undefined;
   if (!uid) return;
   const s = enrollSessions.get(uid);
   const lang: Lang = (userLanguages.get(uid) || s?.language || 'en');
-  
+
   console.log(`📞 Contact received from user ${uid}, current step: ${s?.step}`);
-  
+
   if (!s || s.step !== 'awaiting_phone_contact') {
-    console.log(`❌ No enrollment session or wrong step for user ${uid}. Expected: awaiting_phone_contact, Got: ${s?.step}`);
-    
-    // Provide helpful feedback to user
-    const errorMsg = lang === 'en' 
+    console.log(`❌ No enrollment session or wrong step for user ${uid}`);
+
+    const errorMsg = lang === 'en'
       ? 'Phone number received, but you are not in the enrollment process. Please start by selecting a community to join.'
       : 'የስልክ ቁጥር ተቀብሏል፣ ነገር ግን በምዝገባ ሂደት ውስጥ አይደሉም። እባክዎ ለመቀላቀል ማህበረሰብ በመምረጥ ይጀምሩ።';
-    
+
     await ctx.reply(errorMsg);
     return;
   }
 
   const phone = ctx.message.contact.phone_number;
+  const contactUserId = ctx.message.contact.user_id;
+
   if (!phone) {
     await ctx.reply(lang === 'en' ? 'Phone number not found. Please try again.' : 'ስልክ ቁጥር አልተገኘም። እባክዎ እንደገና ይሞክሩ።');
     return;
   }
 
+  // ========== VALIDATION: Check if shared contact matches Telegram account ==========
+  if (contactUserId && contactUserId !== uid) {
+    const errorMsg = lang === 'en'
+      ? '❌ **Phone Number Mismatch**\n\nYou must share YOUR OWN contact, not someone else\'s phone number.\n\nPlease tap "📱 Share Contact" again and make sure you select your own contact.'
+      : '❌ **የስልክ ቁጥር አለመጣጣም**\n\nየሌላ ሰው ስልክ ቁጥር ሳይሆን የእራስዎን አድራሻ ማጋራት አለብዎት።\n\nእባኮትን እንደገና "📱 አጋራ አድራሻ" ንካ እና የራስህ አድራሻ መምረጥህን አረጋግጥ።';
+
+    await ctx.reply(errorMsg, {
+      parse_mode: 'Markdown',
+      reply_markup: contactKeyboard
+    });
+    return;
+  }
+
+  // Additional validation: normalize and check phone format
+  const normalizedPhone = phone.replace(/[\s\-\+]/g, '');
+  if (normalizedPhone.length < 10) {
+    await ctx.reply(lang === 'en'
+      ? '❌ Invalid phone number format. Please share a valid contact.'
+      : '❌ የተሳሳተ የስልክ ቁጥር ቅርፅ። እባክዎ የሚሰራ ስልክ ቁጥር ያጋሩ።',
+      { reply_markup: contactKeyboard }
+    );
+    return;
+  }
+
+  // Handle phone number changes and Telegram ID changes
+  const profile = await handlePhoneNumberChange(uid, phone);
+
   // Update session with phone
   s.phone = phone;
   await upsertUserProfileFromSession(uid, s);
-
-  // Upsert UserProfile separately
-  try {
-    const username = ctx.from?.username ? `@${ctx.from.username}` : '';
-    const pre = await UserProfile.findOne({ $or: [{ telegramId: String(uid) }, { phoneNumber: phone }] }).sort({ updatedAt: -1 });
-    const fullName = s.fullName || (pre as any)?.fullName || '';
-    const gender = s.gender || (pre as any)?.gender || '';
-    const dob = s.dob || (pre as any)?.dob || '';
-    const residence = s.residence || (pre as any)?.residence_location || '';
-    const email = (s.email === undefined ? (pre as any)?.email : s.email) || '';
-    const language = s.language || (pre as any)?.language || (lang as string);
-
-    await UserProfile.findOneAndUpdate(
-      { telegramId: String(uid) },
-      {
-        telegramId: String(uid),
-        phoneNumber: phone,
-        fullName,
-        gender,
-        dob,
-        residence_location: residence,
-        email,
-        language,
-        telegramUsername: username,
-      },
-      { upsert: true }
-    );
-  } catch (e) {
-    console.warn('UserProfile upsert failed', e);
-  }
 
   // Prefill from UserProfile
   try {
@@ -1018,6 +1197,13 @@ bot.on(message('contact'), async (ctx) => {
   if (!s.residence) missingRequired.push('residence');
 
   if (missingRequired.length === 0) {
+    // If email already on file, skip asking and continue
+    if (s.email && isValidEmail(s.email)) {
+      enrollSessions.set(uid, s);
+      await continueEnrollment(ctx);
+      return;
+    }
+
     s.step = 'awaiting_email';
     enrollSessions.set(uid, s);
 
@@ -1032,11 +1218,16 @@ bot.on(message('contact'), async (ctx) => {
   s.step = 'awaiting_full_name';
   enrollSessions.set(uid, s);
 
-  const namePrompt = lang === 'en' 
-    ? '📝 **Step 2: Personal Information**\n\nGreat! Phone number received: `' + phone + '`\n\nNow, please enter your full name (2-100 characters, letters only):'
-    : '📝 **ደረጃ 2: የግል መረጃ**\n\nግሩም! የስልክ ቁጥር ተቀብሏል: `' + phone + '`\n\nአሁን፣ እባክዎ ሙሉ ስምዎን ያስገቡ (2-100 ቁምፊዎች፣ ፊደላት ብቻ)።';
-  await ctx.reply(namePrompt, { parse_mode: 'Markdown', reply_markup: { remove_keyboard: true } });
+  const namePrompt = lang === 'en'
+    ? '✅ **Phone Verified!**\n\nPhone number received: `' + phone + '`\n\nPlease enter your full name (letters only, 2–100 chars).'
+    : '✅ **ስልክ ተረጋግጧል!**\n\nየስልክ ቁጥር ተቀብሏል: `' + phone + '`\n\nእባክዎ ሙሉ ስምዎን ያስገቡ (ፊደላት ብቻ, 2–100 ቁምፊ).';
+
+  await ctx.reply(namePrompt, {
+    parse_mode: 'Markdown',
+    reply_markup: { remove_keyboard: true }
+  });
 });
+
 
 // Collect name and other text messages
 bot.on(message('text'), async (ctx, next) => {
@@ -1077,8 +1268,8 @@ bot.on(message('text'), async (ctx, next) => {
       // Validate DOB
       if (!isValidDob(text)) {
         await ctx.reply(lang === 'en'
-          ? '❌ Invalid date format. Please use dd/mm/yyyy format (e.g., 12/03/2010).'
-          : '❌ የማይሰራ ቀን ቅርጸት። እባክዎ dd/mm/yyyy ቅርጸት ይጠቀሙ (ለምሳሌ፣ 12/03/2010)።');
+          ? '❌ Invalid date. Use DD/MM/YYYY with day 1–30 and month 1–13 (e.g., 12/03/2010).'
+          : '❌ የማይሰራ ቀን። DD/MM/YYYY ቅርጸት ይጠቀሙ፣ ቀን 1–30 እና ወር 1–13 (ለምሳሌ፣ 12/03/2010)።');
         return;
       }
 
@@ -1126,7 +1317,8 @@ bot.on(message('text'), async (ctx, next) => {
 
         // Generate tx_ref if not set yet and store in session
         if (!enroll.txRef) {
-          enroll.txRef = `community_${enroll.communityId}_${Date.now()}`;
+          const safeCommunityId = enroll.communityId || 'no_community';
+          enroll.txRef = `community_${safeCommunityId}_${Date.now()}`;
           enrollSessions.set(userTelegramId, enroll);
         }
 
@@ -1154,6 +1346,23 @@ bot.on(message('text'), async (ctx, next) => {
 
       // Continue enrollment flow
       await continueEnrollment(ctx);
+      return;
+    }
+
+    if (enroll.step === 'awaiting_payment_phone') {
+      // Validate and set a new phone for payment
+      const phoneText = text.replace(/[\s\-\+]/g, '');
+      if (!/^\d{10,}$/.test(phoneText)) {
+        await ctx.reply(lang === 'en'
+          ? '❌ Invalid phone number. Please enter a valid number.'
+          : '❌ የማይሰራ የስልክ ቁጥር። እባክዎ ትክክለኛ ቁጥር ያስገቡ።');
+        return;
+      }
+      // Do NOT update profile phone here; use a temporary payment-only phone
+      enroll.paymentPhone = phoneText;
+      enrollSessions.set(userTelegramId, enroll);
+      // proceed to invoice
+      await generateInvoiceFromSession(ctx, lang, enroll);
       return;
     }
 
@@ -1232,30 +1441,74 @@ bot.on(message('text'), async (ctx, next) => {
 // Add back to communities handler
 bot.action("back_to_communities", async (ctx) => {
   const userTelegramId = ctx.from?.id;
-  const userLanguage = userTelegramId ? userLanguages.get(userTelegramId) || "en" : "en";
-  
+  let userLanguage: 'en' | 'am' = 'en';
   if (userTelegramId) {
+    const mapLang = userLanguages.get(userTelegramId);
+    if (mapLang) {
+      userLanguage = mapLang as any;
+    } else {
+      try {
+        const prof = await UserProfile.findOne({ telegramId: String(userTelegramId) });
+        const profLang = String((prof as any)?.language || '').toLowerCase();
+        if (profLang === 'am' || profLang === 'en') {
+          userLanguage = profLang as any;
+          userLanguages.set(userTelegramId, userLanguage);
+        }
+      } catch {}
+    }
     paymentSessions.delete(userTelegramId);
     enrollSessions.delete(userTelegramId); // Also clear enrollment session
   }
   
+  // Check if user has pending communities
+  try {
+    const pendingCount = await SubscriptionRequest.countDocuments({
+      userId: String(userTelegramId),
+      paymentStatus: { $in: ['pending', 'expired'] }
+    });
+    
+    if (pendingCount > 0) {
+      const pendingMessage = userLanguage === 'en' 
+        ? `📋 You have ${pendingCount} pending community registration(s).\n\nWhat would you like to do?`
+        : `📋 ${pendingCount} የማህበረሰብ ምዝገባ(ዎች) በመጠባበቅ ላይ አሉ።\n\nምን ማድረግ ይፈልጋሉ?`;
+      
+      await ctx.reply(pendingMessage, {
+        parse_mode: 'Markdown',
+        reply_markup: {
+          inline_keyboard: [
+            [
+              { text: userLanguage === 'en' ? '📋 View Pending' : '📋 በመጠባበቅ ላይ ያሉትን ይመልከቱ', callback_data: 'show_pending_communities' },
+              { text: userLanguage === 'en' ? '🏛️ Browse All' : '🏛️ ሁሉንም ይመልከቱ', callback_data: 'browse_all_communities' }
+            ]
+          ]
+        }
+      });
+      await ctx.answerCbQuery("✅ Options displayed");
+      return;
+    }
+  } catch (error) {
+    console.error("❌ Error checking pending communities:", error);
+  }
+  
+  // No pending communities, show all communities
   await showCommunities(ctx, userLanguage);
   await ctx.answerCbQuery("✅ Back to communities");
 });
 
 // Accept Terms
-bot.action('accept_terms', async (ctx) => {
+bot.action('accept_terms_and_guidelines', async (ctx) => {
   const uid = ctx.from?.id as number | undefined; 
   if (!uid) return;
   const s = enrollSessions.get(uid); 
   if (!s) return;
   
   s.termsAccepted = true; 
-  s.step = 'awaiting_guidelines';
+  s.guidelinesAccepted = true;
+  s.step = 'awaiting_phone_contact';
   enrollSessions.set(uid, s);
-  console.log(`✅ Terms accepted by user ${uid}`);
+  console.log(`✅ Terms and guidelines accepted by user ${uid}`);
   
-  await ctx.answerCbQuery('✅ Terms accepted');
+  await ctx.answerCbQuery('✅ Terms and guidelines accepted');
   await continueEnrollment(ctx);
 });
 
@@ -1277,130 +1530,84 @@ bot.action('accept_guidelines', async (ctx) => {
 
 // Gender selection
 bot.action(/^gender_(Male|Female)$/, async (ctx) => {
-  const uid = ctx.from?.id as number | undefined; 
+  const uid = ctx.from?.id as number | undefined;
   if (!uid) return;
-  const s = enrollSessions.get(uid); 
+  const s = enrollSessions.get(uid);
   if (!s) return;
-  
-  s.gender = (ctx.match![1] as Gender); 
+
+  const selectedGender = ctx.match![1] as Gender;
+  const lang: Lang = (userLanguages.get(uid) || s.language || 'en');
+
+  s.gender = selectedGender;
   enrollSessions.set(uid, s);
   await upsertUserProfileFromSession(uid, s);
   console.log(`✅ Gender set to ${s.gender} for user ${uid}`);
-  
+
+  // ========== REMOVE THE BUTTONS: Edit the message to remove inline keyboard ==========
+  try {
+    const confirmationText = lang === 'en'
+      ? `✅ Gender selected: **${selectedGender}**`
+      : `✅ ጾታ ተመርጧል: **${selectedGender}**`;
+
+    // Edit the original message to remove buttons and show confirmation
+    await ctx.editMessageText(confirmationText, {
+      parse_mode: 'Markdown',
+      reply_markup: { inline_keyboard: [] } // Empty keyboard removes buttons
+    });
+  } catch (editError) {
+    console.warn('Could not edit message:', editError);
+    // Fallback: send new message if edit fails
+    const confirmationText = lang === 'en'
+      ? `✅ Gender selected: **${selectedGender}**`
+      : `✅ ጾታ ተመርጧል: **${selectedGender}**`;
+    await ctx.reply(confirmationText, { parse_mode: 'Markdown' });
+  }
+
   await ctx.answerCbQuery('✅ Gender selected');
   await continueEnrollment(ctx);
 });
 
 // Residence selection
 bot.action(/^residence_(.+)$/, async (ctx) => {
-  const uid = ctx.from?.id as number | undefined; 
+  const uid = ctx.from?.id as number | undefined;
   if (!uid) return;
-  const s = enrollSessions.get(uid); 
+  const s = enrollSessions.get(uid);
   if (!s) return;
-  
-  s.residence = ctx.match![1].replace('_', ' '); // Handle underscores in city names
-  s.step = 'awaiting_email'; // Add this line to update the step
+
+  const selectedResidence = ctx.match![1].replace('_', ' ');
+  const lang: Lang = (userLanguages.get(uid) || s.language || 'en');
+
+  s.residence = selectedResidence;
+  s.step = 'awaiting_email';
   enrollSessions.set(uid, s);
   await upsertUserProfileFromSession(uid, s);
   console.log(`✅ Residence set to ${s.residence} for user ${uid}`);
-  
+
+  // ========== REMOVE THE BUTTONS: Edit the message to remove inline keyboard ==========
+  try {
+    const confirmationText = lang === 'en'
+      ? `✅ Location selected: **${selectedResidence}**`
+      : `✅ አካባቢ ተመርጧል: **${selectedResidence}**`;
+
+    // Edit the original message to remove buttons and show confirmation
+    await ctx.editMessageText(confirmationText, {
+      parse_mode: 'Markdown',
+      reply_markup: { inline_keyboard: [] }
+    });
+  } catch (editError) {
+    console.warn('Could not edit message:', editError);
+    const confirmationText = lang === 'en'
+      ? `✅ Location selected: **${selectedResidence}**`
+      : `✅ አካባቢ ተመርጧል: **${selectedResidence}**`;
+    await ctx.reply(confirmationText, { parse_mode: 'Markdown' });
+  }
+
   await ctx.answerCbQuery('✅ Residence selected');
   await continueEnrollment(ctx);
 });
 
 // Pay button -> Telegram invoice (Chapa)
-bot.action(/^pay_(.+)$/, async (ctx) => {
-  const uid = ctx.from?.id as number | undefined; 
-  if (!uid) return;
-  const s = enrollSessions.get(uid);
-  
-  if (!s || s.communityId !== ctx.match![1]) {
-    await ctx.answerCbQuery('❌ Session expired');
-    await ctx.reply('Session expired. Please select the community again.');
-    return;
-  }
-
-  const lang: Lang = (userLanguages.get(uid) || s.language || 'en');
-  const missing: string[] = [];
-  if (!s.termsAccepted) missing.push('terms');
-  if (!s.guidelinesAccepted) missing.push('guidelines');
-  if (!s.phone) missing.push('phone');
-  if (!s.fullName) missing.push('full_name');
-  if (!s.gender) missing.push('gender');
-  if (!s.dob) missing.push('dob');
-  if (!s.residence) missing.push('residence');
-
-  if (missing.length) {
-    console.log(`❌ Missing info for user ${uid}: ${missing.join(', ')}`);
-    await ctx.reply(lang === 'en' ? 'Please complete your profile first.' : 'እባክዎ መግለጫዎን በመጀመሪያ ያጠናቅቁ።');
-    await ctx.answerCbQuery('❌ Incomplete profile');
-    await continueEnrollment(ctx);
-    return;
-  }
-
-  const priceInCents = Math.round(Number(s.price || 0) * 100);
-  console.log(`💳 Generating invoice for user ${uid}, amount: ${priceInCents} cents`);
-  
-  try {
-    // Initialize Chapa transaction to get a valid tx_ref for verification
-    const names = (s.fullName || '').trim().split(/\s+/);
-    const firstName = names[0] || 'User';
-    const lastName = names.slice(1).join(' ') || 'Telegram';
-    const desiredTxRef = s.txRef || `community_${s.communityId}_${Date.now()}`;
-    const txRef = desiredTxRef;
-    s.txRef = txRef;
-    enrollSessions.set(uid, s);
-
-    // Ensure DB has a record with the FINAL tx_ref before sending invoice
-    try {
-      await SubscriptionRequest.findOneAndUpdate(
-        { userId: String(uid), communityId: s.communityId },
-        { tx_ref: txRef, paymentStatus: 'pending' as any, status: 'active' as any, amount: s.price },
-        { upsert: true, new: true }
-      );
-      console.log('🔄 Synchronized SubscriptionRequest with final tx_ref for pay_:', txRef);
-    } catch (syncErr) {
-      console.error('❌ Failed to sync SubscriptionRequest tx_ref (pay_):', syncErr);
-    }
-
-    const providerData = {
-      phone: s.phone,
-      fullName: s.fullName,
-      gender: s.gender,
-      dob: s.dob,
-      residence: s.residence,
-      email: s.email || '',
-      termsAccepted: s.termsAccepted,
-      guidelinesAccepted: s.guidelinesAccepted,
-      telegramId: s.telegramId,
-      telegramUsername: s.telegramUsername,
-      tx_ref: s.txRef,
-    };
-    console.log('🧾 Sending Telegram invoice (pay_)', { txRef, priceInCents, providerData });
-
-    await ctx.replyWithInvoice({
-      title: `${s.communityName}`,
-      description: `Pay to join ${s.communityName}`,
-      payload: txRef,
-      provider_token: process.env.CHAPA_PROVIDER_TOKEN || "<YOUR_CHAPA_PROVIDER_TOKEN>",
-      currency: "ETB",
-      prices: [{ label: "Community Access", amount: priceInCents }],
-      start_parameter: "pay",
-      need_phone_number: true,
-      send_phone_number_to_provider: true,
-      provider_data: JSON.stringify(providerData),
-    });
-
-    await ctx.answerCbQuery('✅ Invoice sent');
-    await ctx.reply(lang === 'en' ? '💳 Payment invoice generated. Please complete your payment.' : '💳 ክፍያ ደረሰኝ ተፈጥሯል። እባክዎን ክፍያውን ያጠናቅቅ።');
-    
-    // Polling disabled; relying on Telegram successful_payment only
-  } catch (err) {
-    console.error('❌ Failed to send invoice:', err);
-    await ctx.answerCbQuery('❌ Invoice failed');
-    await ctx.reply('⚠️ Failed to generate invoice. Please try again later.');
-  }
-});
+// removed duplicate pay handler - unified confirmation flow is defined later
 
 // Add simple test command
 bot.command("hello", (ctx) => {
@@ -1487,7 +1694,7 @@ bot.use(async (ctx, next) => {
 });
 
 // Handle renew subscription via callback
-bot.on("callback_query", async (ctx) => {
+bot.on("callback_query", async (ctx, next) => {
   const callbackQuery = ctx.callbackQuery;
   if ("data" in callbackQuery && typeof callbackQuery.data === "string") {
     const data = callbackQuery.data;
@@ -1503,14 +1710,33 @@ bot.on("callback_query", async (ctx) => {
           console.log("❌ Subscription doesn't exist");
           return;
         }
-        const priceInCents = Math.round(Number((sub as any).amount || 0) * 100);
+        
+        // Fetch current community price from API
+        const apiUrl = process.env.API_URL;
+        const response = await axios.get(`${apiUrl}/api/v1/telegramCommunity/with-mentor`);
+        const list = Array.isArray(response.data) ? response.data : [];
+        const community = list.find((c: any) => (
+          c.communityId === (sub as any).communityId || c._id === (sub as any).communityId || c.id === (sub as any).communityId
+        ));
+        
+        if (!community) {
+          await ctx.reply("❌ Community not found or no longer available.");
+          return;
+        }
+        
+        // Use current community price, not stored amount
+        const currentPrice = Number(community.price || 0);
+        const priceInCents = Math.round(currentPrice * 100);
+        
+        console.log(`💰 Using current price: ${currentPrice} ETB (was stored: ${(sub as any).amount || 0} ETB)`);
+        
         await ctx.replyWithInvoice({
-          title: "Renew Subscription",
-          description: `Renew to continue to have access`,
+          title: `Renew ${community.communityName}`,
+          description: `Renew your subscription to ${community.communityName}`,
           payload: `renew_${(sub as any).communityId}_${(sub as any).userId}_${Date.now()}`,
           provider_token: process.env.CHAPA_PROVIDER_TOKEN || "<YOUR_CHAPA_PROVIDER_TOKEN>",
           currency: "ETB",
-          prices: [{ label: "Group Access", amount: priceInCents }],
+          prices: [{ label: "Community Renewal", amount: priceInCents }],
           start_parameter: "pay",
           need_phone_number: true,
           send_phone_number_to_provider: true,
@@ -1522,7 +1748,7 @@ bot.on("callback_query", async (ctx) => {
       return;
     }
 
-    await ctx.answerCbQuery("❓ Unknown action.");
+    return next();
   } else {
     console.warn("⚠️ Callback query has no data.");
   }
@@ -1582,88 +1808,6 @@ bot.command("stop_polling", async (ctx) => {
   await ctx.reply("🛑 Polling is disabled.");
 });
 
-// Daily expiry reminder and enforcement scheduler (runs hourly)
-// setInterval(async () => {
-//   try {
-//     const now = new Date();
-//     const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-//     const endOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
-//
-//     // Find all subscriptions expiring today and still active/paid
-//     const expiring = await SubscriptionRequest.find({
-//       paymentStatus: { $in: ['paid', 'renewed'] },
-//       status: 'active',
-//       expireAt: { $gte: startOfDay, $lt: endOfDay },
-//     });
-//
-//     // Group by userId to send one message listing multiple communities
-//     const byUser = new Map<string, any[]>();
-//     for (const doc of expiring) {
-//       const key = String((doc as any).userId);
-//       const list = byUser.get(key) || [];
-//       list.push(doc);
-//       byUser.set(key, list);
-//     }
-//
-//     for (const [userId, docs] of byUser.entries()) {
-//       try {
-//         // Build message listing all communities expiring today for this user
-//         const lines: string[] = [];
-//         for (const d of docs) {
-//           lines.push(`• ${((d as any).communityName) || 'Community'} (ID: ${((d as any).communityId)})`);
-//         }
-//         const msg = `⚠️ Your access expires today for:\n\n${lines.join('\n')}\n\nTap Renew to continue access.`;
-//
-//         // Use first doc's language for UX, and create a single keyboard to open bot
-//         const keyboard = {
-//           inline_keyboard: [
-//             [{ text: '🔄 Renew', callback_data: `renew_community_${(docs[0] as any).communityId}` }],
-//           ],
-//         } as any;
-//
-//         await bot.telegram.sendMessage(userId, msg, { reply_markup: keyboard });
-//
-//         // Increment notice count on each doc
-//         for (const d of docs) {
-//           (d as any).expiryNoticeCount = ((d as any).expiryNoticeCount || 0) + 1;
-//           await (d as any).save();
-//         }
-//       } catch (notifyErr) {
-//         console.error('❌ Failed to send expiry reminder to user', userId, notifyErr);
-//       }
-//     }
-//
-//     // Final enforcement for users who got 3 notices (3 days) and are still expired
-//     const overdue = await SubscriptionRequest.find({
-//       status: 'active',
-//       paymentStatus: { $in: ['paid', 'renewed'] },
-//       expireAt: { $lt: startOfDay },
-//       expiryNoticeCount: { $gte: 3 },
-//     });
-//
-//     for (const d of overdue) {
-//       const groupId = String((d as any).groupId || '');
-//       const userId = String((d as any).userId || '');
-//       if (!groupId || !userId) continue;
-//       try {
-//         // Kick (ban+unban) and mark expired
-//         await bot.telegram.banChatMember(groupId, Number(userId));
-//         await bot.telegram.unbanChatMember(groupId, Number(userId));
-//
-//         (d as any).status = 'expired';
-//         (d as any).paymentStatus = 'expired';
-//         await (d as any).save();
-//
-//         await bot.telegram.sendMessage(userId, '⛔ Your access has expired and you have been removed from the group. Use Renew to regain access.');
-//       } catch (kickErr) {
-//         console.error('❌ Failed to kick expired user', { groupId, userId }, kickErr);
-//       }
-//     }
-//   } catch (err) {
-//     console.error('❌ Expiry scheduler error:', err);
-//   }
-// }, 5000); // run every 5 seconds (testing)
-
 // Profile command: show user's latest profile info
 bot.command("profile", async (ctx) => {
   const uid = ctx.from?.id;
@@ -1672,18 +1816,132 @@ bot.command("profile", async (ctx) => {
 
   try {
     const profile = await UserProfile.findOne({ telegramId: String(uid) });
+
+    // Helper to show current profile
+    const showProfile = async () => {
+      const useAm = String((profile as any)?.language || fallbackLang).toLowerCase() === 'am';
+      const infoEn = `👤 Profile
+
+Full name: ${(profile as any)?.fullName || 'N/A'}
+Phone: ${(profile as any)?.phoneNumber || 'N/A'}
+Username: ${(profile as any)?.telegramUsername || 'N/A'}
+Location: ${(profile as any)?.residence_location || 'N/A'}
+Email: ${(profile as any)?.email || 'N/A'}
+Gender: ${(profile as any)?.gender || 'N/A'}
+DOB: ${(profile as any)?.dob || 'N/A'}
+Language: ${(profile as any)?.language || 'en'}`;
+      const infoAm = `👤 መገለጫ
+
+ሙሉ ስም: ${(profile as any)?.fullName || 'አይገኝም'}
+ስልክ: ${(profile as any)?.phoneNumber || 'አይገኝም'}
+የቴሌግራም ዩዘር: ${(profile as any)?.telegramUsername || 'አይገኝም'}
+አካባቢ: ${(profile as any)?.residence_location || 'አይገኝም'}
+ኢሜል: ${(profile as any)?.email || 'አይገኝም'}
+ጾታ: ${(profile as any)?.gender || 'አይገኝም'}
+የትውልድ ቀን: ${(profile as any)?.dob || 'አይገኝም'}
+ቋንቋ: ${(profile as any)?.language || 'en'}`;
+      await ctx.reply(useAm ? infoAm : infoEn);
+    };
+
+    // Start/continue a profile completion session
+    const s = enrollSessions.get(uid) || {
+      step: 'awaiting_language',
+    } as EnrollmentSession;
+
+    s.language = (s.language as any) || ((profile as any)?.language as any) || fallbackLang;
+    s.termsAccepted = true;
+    s.guidelinesAccepted = true;
+    s.telegramId = String(uid);
+    s.telegramUsername = (profile as any)?.telegramUsername || (ctx.from?.username ? `@${ctx.from.username}` : '');
+
+    const lang: Lang = (s.language as Lang) || 'en';
+
     if (!profile) {
-      await ctx.reply(fallbackLang === 'am' ? 'መገለጫ አልተገኘም። እባክዎ መጀመሪያ መረጃዎን ያቅርቡ (ምሳሌ፡ የስልክ እና ስም).' : 'No profile found. Please share your contact to create one.');
+      // No profile yet -> ask for contact first
+      s.step = 'awaiting_phone_contact';
+      enrollSessions.set(uid, s);
+      await promptShareContact(ctx, lang);
       return;
     }
 
-    const useAm = String((profile as any).language || '').toLowerCase() === 'am';
+    // Prefill known fields
+    s.phone = (profile as any)?.phoneNumber || '';
+    s.fullName = (profile as any)?.fullName || '';
+    s.gender = (profile as any)?.gender || '';
+    s.dob = (profile as any)?.dob || '';
+    s.residence = (profile as any)?.residence_location || '';
+    s.email = (profile as any)?.email ?? '';
 
-    const infoEn = `👤 Profile\n\nFull name: ${profile.fullName || 'N/A'}\nPhone: ${profile.phoneNumber || 'N/A'}\nUsername: ${profile.telegramUsername || 'N/A'}\nLocation: ${profile.residence_location || 'N/A'}\nEmail: ${profile.email || 'N/A'}\nGender: ${profile.gender || 'N/A'}\nDOB: ${profile.dob || 'N/A'}\nLanguage: ${profile.language || 'en'}`;
+    // Decide next missing step (phone -> name -> gender -> dob -> residence -> email)
+    if (!s.phone) {
+      s.step = 'awaiting_phone_contact';
+      enrollSessions.set(uid, s);
+      await promptShareContact(ctx, lang);
+      return;
+    }
+    if (!s.fullName) {
+      s.step = 'awaiting_full_name';
+      enrollSessions.set(uid, s);
+      await promptFullName(ctx, lang);
+      return;
+    }
+    if (!s.gender) {
+      s.step = 'awaiting_gender';
+      enrollSessions.set(uid, s);
+      await promptGender(ctx, lang);
+      return;
+    }
+    if (!s.dob) {
+      s.step = 'awaiting_dob';
+      enrollSessions.set(uid, s);
+      await promptDob(ctx, lang);
+      return;
+    }
+    if (!s.residence) {
+      s.step = 'awaiting_residence';
+      enrollSessions.set(uid, s);
+      await promptResidence(ctx, lang);
+      return;
+    }
 
-    const infoAm = `👤 መገለጫ\n\nሙሉ ስም: ${profile.fullName || 'አይገኝም'}\nስልክ: ${profile.phoneNumber || 'አይገኝም'}\nየቴሌግራም ዩዘር: ${profile.telegramUsername || 'አይገኝም'}\nአካባቢ: ${profile.residence_location || 'አይገኝም'}\nኢሜል: ${profile.email || 'አይገኝም'}\nጾታ: ${profile.gender || 'አይገኝም'}\nየትውልድ ቀን: ${profile.dob || 'አይገኝም'}\nቋንቋ: ${profile.language || 'en'}`;
+    // Email is optional; if missing, ask but allow skip
+    if (s.email === undefined || s.email === '') {
+      s.step = 'awaiting_email';
+      enrollSessions.set(uid, s);
+      const currentEmail = s.email || '';
+      const prompt = lang === 'en'
+        ? `📝 Optional: Update your email.\nCurrent: ${currentEmail || 'N/A'}\n\nSend a new email or type "skip" to continue.`
+        : `📝 አማራጭ፡ ኢሜልዎን ያዘምኑ።\nየአሁኑ፡ ${currentEmail || 'አይገኝም'}\n\nአዲስ ኢሜል ይላኩ ወይም "skip" በማለት ይቀጥሉ።`;
+      await ctx.reply(prompt);
+      return;
+    }
+    // All good -> show profile
+    await showProfile();
 
-    await ctx.reply(useAm ? infoAm : infoEn);
+    // determine language for update menu
+    const useAm = String((profile as any)?.language || fallbackLang).toLowerCase() === 'am';
+
+    // Send update menu
+    const updateKeyboard: InlineKeyboardMarkup = {
+      inline_keyboard: [
+        [
+          { text: useAm ? '📱 ስልክ አዘምን' : '📱 Update Phone', callback_data: 'update_phone' },
+          { text: useAm ? '✏️ ስም አዘምን' : '✏️ Update Name', callback_data: 'update_full_name' }
+        ],
+        [
+          { text: useAm ? '⚧ ጾታ አዘምን' : '⚧ Update Gender', callback_data: 'update_gender' },
+          { text: useAm ? '🎂 የትውልድ ቀን አዘምን' : '🎂 Update DOB', callback_data: 'update_dob' }
+        ],
+        [
+          { text: useAm ? '🏙️ አካባቢ አዘምን' : '🏙️ Update Residence', callback_data: 'update_residence' },
+          { text: useAm ? '📧 ኢሜል አዘምን' : '📧 Update Email', callback_data: 'update_email' }
+        ],
+        [
+          { text: useAm ? '🏠 ወደ ማህበረሰቦች' : '🏠 Back to Communities', callback_data: 'back_to_communities' }
+        ]
+      ]
+    };
+    await ctx.reply(useAm ? 'ምን ማዘመን ትፈልጋሉ?' : 'What would you like to update?', { reply_markup: updateKeyboard });
   } catch (err) {
     console.error('/profile error', err);
     await ctx.reply(fallbackLang === 'am' ? 'መገለጫ መረጃ ማሳየት አልተቻለም።' : 'Failed to fetch profile info.');
@@ -1697,18 +1955,27 @@ bot.command("my_community", async (ctx) => {
   const lang: 'en' | 'am' = (userLanguages.get(uid) || 'en');
 
   try {
-    const subs = await SubscriptionRequest.find({ userId: String(uid) }).sort({ updatedAt: -1 });
+    // Only fetch paid/active communities
+    const subs = await SubscriptionRequest.find({ 
+      userId: String(uid),
+      paymentStatus: { $in: ['paid', 'renewed'] },
+      status: 'active'
+    }).sort({ updatedAt: -1 });
+    
     if (!subs || subs.length === 0) {
-      await ctx.reply(lang === 'am' ? 'ምንም የተመዘገቡ ማህበረሰቦች የሉም።' : 'You have no subscribed communities.');
+      await ctx.reply(lang === 'am' ? 'ምንም የተመዘገቡ ማህበረሰቦች የሉም።' : 'You have no active subscribed communities.');
       return;
     }
 
     // Group by community and show current status
     for (const s of subs) {
       const isAm = (s as any).language === 'am' || lang === 'am';
-      const status = String((s as any).paymentStatus || 'pending');
+      const status = String((s as any).paymentStatus || 'paid');
       const expireAt = (s as any).expireAt ? new Date((s as any).expireAt as any) : undefined;
       const expireStr = expireAt ? expireAt.toLocaleString() : (isAm ? 'አይገኝም' : 'N/A');
+      
+      // Check if subscription is expired
+      const isExpired = expireAt && expireAt < new Date();
 
       const msg = isAm
         ? `🏛️ ${s.communityName}
@@ -1721,11 +1988,19 @@ Status: ${status}
 Expire At: ${expireStr}`;
 
       const keyboard: any = {
-        inline_keyboard: [
-          [{ text: isAm ? '🔄 እድሳት' : '🔄 Renew', callback_data: `renew_community_${s.communityId}` }],
-          [{ text: isAm ? '🏠 ወደ ማህበረሰቦች' : '🏠 Back to Communities', callback_data: 'back_to_communities' }]
-        ]
+        inline_keyboard: []
       };
+
+      // Only show renew button if expired
+      if (isExpired) {
+        keyboard.inline_keyboard.push([
+          { text: isAm ? '🔄 እድሳት' : '🔄 Renew', callback_data: `renew_community_${s.communityId}` }
+        ]);
+      }
+      
+      keyboard.inline_keyboard.push([
+        { text: isAm ? '🏠 ወደ ማህበረሰቦች' : '🏠 Back to Communities', callback_data: 'back_to_communities' }
+      ]);
 
       await ctx.reply(msg, { reply_markup: keyboard });
     }
@@ -1935,4 +2210,416 @@ Current Bot Permissions:
     await ctx.reply('❌ Failed to retrieve group information. Please try again later.');
   }
 });
+
+// Add new action to show all pending communities
+bot.action("show_pending_communities", async (ctx) => {
+  const userTelegramId = ctx.from?.id;
+  const userLang = userTelegramId ? userLanguages.get(userTelegramId) || 'en' : 'en';
+  if (!userTelegramId) return;
+  
+  try {
+    // Fetch all pending subscriptions for this user
+    const pendingSubs = await SubscriptionRequest.find({
+      userId: String(userTelegramId),
+      paymentStatus: 'pending'
+    }).sort({ createdAt: -1 });
+    
+    if (pendingSubs.length === 0) {
+      const noPendingMessage = userLang === 'en' 
+        ? '📋 **No Pending Communities**\n\nYou have no pending community registrations.'
+        : '📋 **ምንም በመጠባበቅ ላይ ያሉ ማህበረሰቦች የሉም**\n\nምንም የማህበረሰብ ምዝገባዎች በመጠባበቅ ላይ አይገኙም።';
+      
+      await ctx.reply(noPendingMessage, {
+        parse_mode: 'Markdown',
+        reply_markup: {
+          inline_keyboard: [
+            [{ text: userLang === 'en' ? '🏠 Back to Communities' : '🏠 ወደ ማህበረሰቦች ተመለስ', callback_data: 'back_to_communities' }]
+          ]
+        }
+      });
+      await ctx.answerCbQuery("✅ No pending communities");
+      return;
+    }
+    
+    // Group by payment status
+    const pendingCommunities = pendingSubs.filter(sub => sub.paymentStatus === 'pending');
+    const expiredCommunities = pendingSubs.filter(sub => sub.paymentStatus === 'expired');
+    
+    let message = userLang === 'en' 
+      ? `📋 **Your Pending Communities**\n\n`
+      : `📋 **የእርስዎ በመጠባበቅ ላይ ያሉ ማህበረሰቦች**\n\n`;
+    
+    // Show pending communities
+    if (pendingCommunities.length > 0) {
+      message += userLang === 'en' ? '**Pending Payment:**\n' : '**በመጠባበቅ ላይ ያለ ክፍያ:**\n';
+      for (let i = 0; i < pendingCommunities.length; i++) {
+        const sub: any = pendingCommunities[i];
+        const name = sub.communityName || 'Community';
+        const amount = (sub.amount ?? 0);
+        message += `${i + 1}. ${name} - ${amount} birr\n`;
+      }
+      message += '\n';
+    }
+    
+    // Show expired communities
+    if (expiredCommunities.length > 0) {
+      message += userLang === 'en' ? '**Expired (Need Renewal):**\n' : '**የተሽረሸ (እድሳት ያስፈልጋል):**\n';
+      for (let i = 0; i < expiredCommunities.length; i++) {
+        const sub: any = expiredCommunities[i];
+        const name = sub.communityName || 'Community';
+        const amount = (sub.amount ?? 0);
+        message += `${i + 1}. ${name} - ${amount} birr\n`;
+      }
+      message += '\n';
+    }
+    
+    // Create keyboard with buttons for each community
+    const keyboard: any = { inline_keyboard: [] };
+    
+    // Add buttons for pending communities
+    for (const sub of pendingCommunities) {
+      const name = (sub as any).communityName || 'Community';
+      keyboard.inline_keyboard.push([
+        { 
+          text: `${userLang === 'en' ? '💳' : '💳'} ${name} - ${userLang === 'en' ? 'Continue Payment' : 'ክፍያ ቀጥል'}`, 
+          callback_data: `continue_payment_${(sub as any).communityId}` 
+        }
+      ]);
+    }
+    // Add buttons for expired communities
+    for (const sub of expiredCommunities) {
+      const name = (sub as any).communityName || 'Community';
+      keyboard.inline_keyboard.push([
+        { 
+          text: `${userLang === 'en' ? '🔄' : '🔄'} ${name} - ${userLang === 'en' ? 'Renew' : 'እድሳት'}`, 
+          callback_data: `renew_community_${(sub as any).communityId}` 
+        }
+      ]);
+    }
+    
+    // Add back button
+    keyboard.inline_keyboard.push([
+      { text: userLang === 'en' ? '🏠 Back to Communities' : '🏠 ወደ ማህበረሰቦች ተመለስ', callback_data: 'back_to_communities' }
+    ]);
+    
+    await ctx.reply(message, {
+      parse_mode: 'Markdown',
+      reply_markup: keyboard
+    });
+    
+    await ctx.answerCbQuery("✅ Pending communities displayed");
+  } catch (error) {
+    console.error("❌ Error fetching pending communities:", error);
+    await ctx.reply(userLang === 'en' ? '❌ Failed to fetch pending communities.' : '❌ በመጠባበቅ ላይ ያሉ ማህበረሰቦችን ማግኘት አልተሳካም።');
+    await ctx.answerCbQuery("❌ Error occurred");
+  }
+});
+
+// Add action for browsing all communities
+bot.action("browse_all_communities", async (ctx) => {
+  const userTelegramId = ctx.from?.id;
+  const userLanguage = userTelegramId ? userLanguages.get(userTelegramId) || "en" : "en";
+  
+  await showCommunities(ctx, userLanguage);
+  await ctx.answerCbQuery("✅ Browsing all communities");
+});
+
+// Update menu action handlers
+bot.action('update_phone', async (ctx) => {
+  const uid = ctx.from?.id as number | undefined;
+  if (!uid) return;
+  const lang: Lang = (userLanguages.get(uid) || 'en');
+  const s = enrollSessions.get(uid) || ({ step: 'awaiting_language', language: lang } as EnrollmentSession);
+  s.language = (s.language as Lang) || lang;
+  s.step = 'awaiting_phone_contact';
+  s.profileUpdateMode = true;
+  // Prefill from DB to preserve fields
+  try {
+    const prof = await UserProfile.findOne({ telegramId: String(uid) });
+    if (prof) {
+      s.phone = s.phone || (prof as any).phoneNumber || '';
+      s.fullName = s.fullName || (prof as any).fullName || '';
+      s.gender = s.gender || (prof as any).gender || '';
+      s.dob = s.dob || (prof as any).dob || '';
+      s.residence = s.residence || (prof as any).residence_location || '';
+      if (s.email === undefined) s.email = (prof as any).email || '';
+      s.telegramUsername = s.telegramUsername || (prof as any).telegramUsername || s.telegramUsername;
+      s.termsAccepted = true; s.guidelinesAccepted = true;
+    }
+  } catch {}
+  enrollSessions.set(uid, s);
+  await ctx.answerCbQuery(lang === 'en' ? '📱 Update phone' : '📱 ስልክ አዘምን');
+  await promptShareContact(ctx, s.language as Lang);
+});
+
+bot.action('update_full_name', async (ctx) => {
+  const uid = ctx.from?.id as number | undefined;
+  if (!uid) return;
+  const lang: Lang = (userLanguages.get(uid) || 'en');
+  const s = enrollSessions.get(uid) || ({ step: 'awaiting_language', language: lang } as EnrollmentSession);
+  s.language = (s.language as Lang) || lang;
+  s.step = 'awaiting_full_name';
+  s.profileUpdateMode = true;
+  try {
+    const prof = await UserProfile.findOne({ telegramId: String(uid) });
+    if (prof) {
+      s.phone = s.phone || (prof as any).phoneNumber || '';
+      s.fullName = s.fullName || (prof as any).fullName || '';
+      s.gender = s.gender || (prof as any).gender || '';
+      s.dob = s.dob || (prof as any).dob || '';
+      s.residence = s.residence || (prof as any).residence_location || '';
+      if (s.email === undefined) s.email = (prof as any).email || '';
+      s.telegramUsername = s.telegramUsername || (prof as any).telegramUsername || s.telegramUsername;
+      s.termsAccepted = true; s.guidelinesAccepted = true;
+    }
+  } catch {}
+  enrollSessions.set(uid, s);
+  await ctx.answerCbQuery(lang === 'en' ? '✏️ Update name' : '✏️ ስም አዘምን');
+  await promptFullName(ctx, s.language as Lang);
+});
+
+bot.action('update_gender', async (ctx) => {
+  const uid = ctx.from?.id as number | undefined;
+  if (!uid) return;
+  const lang: Lang = (userLanguages.get(uid) || 'en');
+  const s = enrollSessions.get(uid) || ({ step: 'awaiting_language', language: lang } as EnrollmentSession);
+  s.language = (s.language as Lang) || lang;
+  s.step = 'awaiting_gender';
+  s.profileUpdateMode = true;
+  try {
+    const prof = await UserProfile.findOne({ telegramId: String(uid) });
+    if (prof) {
+      s.phone = s.phone || (prof as any).phoneNumber || '';
+      s.fullName = s.fullName || (prof as any).fullName || '';
+      s.gender = s.gender || (prof as any).gender || '';
+      s.dob = s.dob || (prof as any).dob || '';
+      s.residence = s.residence || (prof as any).residence_location || '';
+      if (s.email === undefined) s.email = (prof as any).email || '';
+      s.telegramUsername = s.telegramUsername || (prof as any).telegramUsername || s.telegramUsername;
+      s.termsAccepted = true; s.guidelinesAccepted = true;
+    }
+  } catch {}
+  enrollSessions.set(uid, s);
+  await ctx.answerCbQuery(lang === 'en' ? '⚧ Update gender' : '⚧ ጾታ አዘምን');
+  await promptGender(ctx, s.language as Lang);
+});
+
+bot.action('update_dob', async (ctx) => {
+  const uid = ctx.from?.id as number | undefined;
+  if (!uid) return;
+  const lang: Lang = (userLanguages.get(uid) || 'en');
+  const s = enrollSessions.get(uid) || ({ step: 'awaiting_language', language: lang } as EnrollmentSession);
+  s.language = (s.language as Lang) || lang;
+  s.step = 'awaiting_dob';
+  s.profileUpdateMode = true;
+  try {
+    const prof = await UserProfile.findOne({ telegramId: String(uid) });
+    if (prof) {
+      s.phone = s.phone || (prof as any).phoneNumber || '';
+      s.fullName = s.fullName || (prof as any).fullName || '';
+      s.gender = s.gender || (prof as any).gender || '';
+      s.dob = s.dob || (prof as any).dob || '';
+      s.residence = s.residence || (prof as any).residence_location || '';
+      if (s.email === undefined) s.email = (prof as any).email || '';
+      s.telegramUsername = s.telegramUsername || (prof as any).telegramUsername || s.telegramUsername;
+      s.termsAccepted = true; s.guidelinesAccepted = true;
+    }
+  } catch {}
+  enrollSessions.set(uid, s);
+  await ctx.answerCbQuery(lang === 'en' ? '🎂 Update DOB' : '🎂 የትውልድ ቀን አዘምን');
+  await promptDob(ctx, s.language as Lang);
+});
+
+bot.action('update_residence', async (ctx) => {
+  const uid = ctx.from?.id as number | undefined;
+  if (!uid) return;
+  const lang: Lang = (userLanguages.get(uid) || 'en');
+  const s = enrollSessions.get(uid) || ({ step: 'awaiting_language', language: lang } as EnrollmentSession);
+  s.language = (s.language as Lang) || lang;
+  s.step = 'awaiting_residence';
+  s.profileUpdateMode = true;
+  try {
+    const prof = await UserProfile.findOne({ telegramId: String(uid) });
+    if (prof) {
+      s.phone = s.phone || (prof as any).phoneNumber || '';
+      s.fullName = s.fullName || (prof as any).fullName || '';
+      s.gender = s.gender || (prof as any).gender || '';
+      s.dob = s.dob || (prof as any).dob || '';
+      s.residence = s.residence || (prof as any).residence_location || '';
+      if (s.email === undefined) s.email = (prof as any).email || '';
+      s.telegramUsername = s.telegramUsername || (prof as any).telegramUsername || s.telegramUsername;
+      s.termsAccepted = true; s.guidelinesAccepted = true;
+    }
+  } catch {}
+  enrollSessions.set(uid, s);
+  await ctx.answerCbQuery(lang === 'en' ? '🏙️ Update residence' : '🏙️ አካባቢ አዘምን');
+  await promptResidence(ctx, s.language as Lang);
+});
+
+bot.action('update_email', async (ctx) => {
+  const uid = ctx.from?.id as number | undefined;
+  if (!uid) return;
+  const lang: Lang = (userLanguages.get(uid) || 'en');
+  const s = enrollSessions.get(uid) || ({ step: 'awaiting_language', language: lang } as EnrollmentSession);
+  s.language = (s.language as Lang) || lang;
+  s.step = 'awaiting_email';
+  s.profileUpdateMode = true;
+  try {
+    const prof = await UserProfile.findOne({ telegramId: String(uid) });
+    if (prof) {
+      s.phone = s.phone || (prof as any).phoneNumber || '';
+      s.fullName = s.fullName || (prof as any).fullName || '';
+      s.gender = s.gender || (prof as any).gender || '';
+      s.dob = s.dob || (prof as any).dob || '';
+      s.residence = s.residence || (prof as any).residence_location || '';
+      if (s.email === undefined) s.email = (prof as any).email || '';
+      s.telegramUsername = s.telegramUsername || (prof as any).telegramUsername || s.telegramUsername;
+      s.termsAccepted = true; s.guidelinesAccepted = true;
+    }
+  } catch {}
+  enrollSessions.set(uid, s);
+  await ctx.answerCbQuery(lang === 'en' ? '📧 Update email' : '📧 ኢሜል አዘምን');
+  const currentEmail = s.email || '';
+  const prompt = (s.language as Lang) === 'en'
+    ? `📝 Optional: Update your email.\nCurrent: ${currentEmail || 'N/A'}\n\nSend a new email or type "skip" to continue.`
+    : `📝 አማራጭ፡ ኢሜልዎን ያዘምኑ።\nየአሁኑ፡ ${currentEmail || 'አይገኝም'}\n\nአዲስ ኢሜል ይላኩ ወይም "skip" በማለት ይቀጥሉ።`;
+  await ctx.reply(prompt);
+});
+
+async function promptConfirmPaymentPhone(ctx: any, lang: Lang, phone: string) {
+  const msg = lang === 'en'
+    ? `📞 Is this your billing phone number?\n\n${phone}`
+    : `📞 ክፍያ የሚፈፀምበት ስልክ ቁጥርዎ ይሄ ነው?\n\n${phone}`;
+  const keyboard = {
+    inline_keyboard: [
+      [
+        { text: lang === 'en' ? '✅ Yes, use this' : '✅ አዎን፣ ይህን ተጠቀም', callback_data: 'confirm_payment_phone_yes' },
+        { text: lang === 'en' ? '✏️ No, change' : '✏️ አይ፣ ለውጥ', callback_data: 'confirm_payment_phone_no' }
+      ]
+    ]
+  } as InlineKeyboardMarkup;
+  await ctx.reply(msg, { reply_markup: keyboard });
+}
+
+// Intercept pay button to confirm phone before invoice
+bot.action(/^pay_(.+)$/, async (ctx) => {
+  const uid = ctx.from?.id as number | undefined; 
+  if (!uid) return;
+  const s = enrollSessions.get(uid);
+  
+  if (!s || s.communityId !== ctx.match![1]) {
+    await ctx.answerCbQuery('❌ Session expired');
+    await ctx.reply('Session expired. Please select the community again.');
+    return;
+  }
+
+  const lang: Lang = (userLanguages.get(uid) || s.language || 'en');
+  const missing: string[] = [];
+  if (!s.termsAccepted) missing.push('terms');
+  if (!s.guidelinesAccepted) missing.push('guidelines');
+  if (!s.phone) missing.push('phone');
+  if (!s.fullName) missing.push('full_name');
+  if (!s.gender) missing.push('gender');
+  if (!s.dob) missing.push('dob');
+  if (!s.residence) missing.push('residence');
+
+  if (missing.length) {
+    console.log(`❌ Missing info for user ${uid}: ${missing.join(', ')}`);
+    await ctx.reply(lang === 'en' ? 'Please complete your profile first.' : 'እባክዎ መግለጫዎን በመጀመሪያ ያጠናቅቁ።');
+    await ctx.answerCbQuery('❌ Incomplete profile');
+    await continueEnrollment(ctx);
+    return;
+  }
+
+  // Move to phone confirmation step
+  s.step = 'awaiting_payment_phone';
+  s.paymentMode = 'pay';
+  enrollSessions.set(uid, s);
+  await ctx.answerCbQuery('');
+  await promptConfirmPaymentPhone(ctx, lang, s.phone!);
+});
+
+// Confirm/Change phone callbacks
+bot.action('confirm_payment_phone_yes', async (ctx) => {
+  const uid = ctx.from?.id as number | undefined;
+  if (!uid) return;
+  const s = enrollSessions.get(uid);
+  if (!s) return;
+  const lang: Lang = (userLanguages.get(uid) || s.language || 'en');
+  if (s.step !== 'awaiting_payment_phone') return;
+  // proceed to invoice according to paymentMode
+  if (s.paymentMode === 'pay') {
+    // Call original pay logic by reusing current handler pathway
+    s.step = 'ready_for_payment';
+    enrollSessions.set(uid, s);
+    // trigger invoice using existing pay logic
+    const tmpCtx: any = ctx;
+    // reuse by calling the same code path (fallthrough to existing invoice code)
+    // We'll redirect to a small helper
+    await generateInvoiceFromSession(tmpCtx, lang, s);
+  }
+});
+
+bot.action('confirm_payment_phone_no', async (ctx) => {
+  const uid = ctx.from?.id as number | undefined;
+  if (!uid) return;
+  const s = enrollSessions.get(uid);
+  if (!s) return;
+  const lang: Lang = (userLanguages.get(uid) || s.language || 'en');
+  // Ask for a new phone via reply and wait for text
+  s.step = 'awaiting_payment_phone';
+  enrollSessions.set(uid, s);
+  await ctx.reply(lang === 'en' ? 'Please enter the phone number to use for payment.' : 'እባክዎ ለክፍያ የሚጠቀሙትን የስልክ ቁጥር ያስገቡ።');
+});
+
+// Helper to generate the invoice with session data
+async function generateInvoiceFromSession(ctx: any, lang: Lang, s: EnrollmentSession) {
+  const uid = Number(s.telegramId);
+  const priceInCents = Math.round(Number(s.price || 0) * 100);
+  try {
+    const names = (s.fullName || '').trim().split(/\s+/);
+    const firstName = names[0] || 'User';
+    const lastName = names.slice(1).join(' ') || 'Telegram';
+    const safeCommunityId = s.communityId || 'no_community';
+    const desiredTxRef = s.txRef || `community_${safeCommunityId}_${Date.now()}`;
+    const txRef = desiredTxRef;
+    s.txRef = txRef;
+    enrollSessions.set(uid, s);
+    try {
+      await SubscriptionRequest.findOneAndUpdate(
+        { userId: String(uid), communityId: s.communityId },
+        { tx_ref: txRef, paymentStatus: 'pending' as any, status: 'active' as any, amount: s.price, communityName: s.communityName },
+        { upsert: true, new: true }
+      );
+    } catch {}
+    const providerData = {
+      phone: s.paymentPhone || s.phone,
+      fullName: s.fullName,
+      gender: s.gender,
+      dob: s.dob,
+      residence: s.residence,
+      email: s.email || '',
+      termsAccepted: s.termsAccepted,
+      guidelinesAccepted: s.guidelinesAccepted,
+      telegramId: s.telegramId,
+      telegramUsername: s.telegramUsername,
+      tx_ref: s.txRef,
+    };
+    await ctx.replyWithInvoice({
+      title: `${s.communityName}`,
+      description: lang === 'en' ? `Pay to join ${s.communityName}` : `${s.communityName} ለመቀላቀል ክፍያ ያድርጉ` ,
+      payload: txRef,
+      provider_token: process.env.CHAPA_PROVIDER_TOKEN || "<YOUR_CHAPA_PROVIDER_TOKEN>",
+      currency: "ETB",
+      prices: [{ label: "Community Access", amount: priceInCents }],
+      start_parameter: "pay",
+      need_phone_number: true,
+      send_phone_number_to_provider: true,
+      provider_data: JSON.stringify(providerData),
+    });
+    await ctx.reply(lang === 'en' ? '💳 Payment invoice generated. Please complete your payment.' : '💳 ክፍያ ደረሰኝ ተፈጥሯል። እባክዎን ክፍያውን ያጠናቅቅ።');
+  } catch (err) {
+    await ctx.reply(lang === 'en' ? '⚠️ Failed to generate invoice. Please try again later.' : '⚠️ ደረሰኝ ማመንጨት አልተቻለም። እባክዎ በኋላ ይሞክሩ።');
+  }
+}
 

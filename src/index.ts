@@ -2,6 +2,7 @@ import express, { Response } from "express";
 import mongoose from "mongoose";
 import { ServerConfig } from "./config/ServerConfig";
 import userRoute from "./routes/user.routes";
+import notificationRoute from "./routes/notification.routes";
 import { Course } from "./Model/Course.model";
 import { User } from "./Model/User.model";
 import { chapaWebhook } from "./controller/ChapaWebhook";
@@ -14,6 +15,7 @@ app.use(express.static("public"));
 app.use("/uploads", express.static("uploads"));
 
 app.use("/api/user", userRoute);
+app.use("/api/notifications", notificationRoute);
 app.post("/api/webhooks/chapa", chapaWebhook);
 
 app.get("/", async (_req, res: Response): Promise<void> => {

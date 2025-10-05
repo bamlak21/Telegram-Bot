@@ -1,6 +1,6 @@
-import { Context } from 'telegraf';
 import { SubscriptionRequest } from '../Model/SubscriptionReq.model';
 import { bot } from './botInstance';
+import { Transaction } from '../Model/Transaction.model';
 import axios from 'axios';
 
 export async function processVerifiedPayment(
@@ -157,6 +157,82 @@ export async function handleSuccessfulPayment(
             : `✅ ለ${subRequest.communityName} ወደ Tigat Bot ETB${(payment.total_amount / 100).toFixed(2)} በተሳካ ሁኔታ አስተላልፈዋል። ምዝገባዎ አሁን ንቁ ነው።\n\nከላይ የተላከውን ሊንክ ተጠቅመው ቡድኑን ይቀላቀሉ።\n⏳ ሊንኩ በ10 ደቂቃ ውስጥ ይሽረሳል።`;
         await ctx.reply(successMessage);
         console.log('✅ Invite message sent to user', subRequest.userId);
+
+        // === Update Transaction aggregation per community ===
+        try {
+          const amountPaid = Number(payment.total_amount) / 100; // ETB
+          const commId = String((subRequest as any).communityId || '');
+          if (commId) {
+            await Transaction.findOneAndUpdate(
+              { communityId: commId },
+              { $inc: { totalAmount: amountPaid } },
+              { upsert: true, new: true }
+            );
+            console.log('📈 Transaction total updated', { communityId: commId, amountPaid });
+          } else {
+            console.warn('⚠️ Missing communityId on subRequest; skipping Transaction update');
+          }
+
+          // === Post mentor revenue to external API ===
+          try {
+            const baseUrl = process.env.API_BASE_URL;
+            if (!baseUrl) {
+              console.warn('⚠️ API_BASE_URL is not set; skipping revenue post');
+            } else {
+              // Try to get mentorId from enrollment session community
+              let mentorId: string | undefined;
+              const es: any = enrollSessions.get(userTelegramId);
+              if (es && es.community) {
+                mentorId = es.community.mentorId || es.community.mentor?._id || es.community.mentor?.id || es.community.mentorId;
+              }
+              // If still missing, try fetching communities and match by communityId
+              if (!mentorId && commId) {
+                try {
+                  const apiUrl = process.env.API_URL;
+                  if (apiUrl) {
+                    const resp = await axios.get(`${apiUrl}/api/v1/telegramCommunity/with-mentor`);
+                    const list = Array.isArray(resp.data) ? resp.data : [];
+                    const found = list.find((c: any) => (c.communityId === commId || c._id === commId || c.id === commId));
+                    if (found) {
+                      mentorId = found.mentorId || found.mentor?._id || found.mentor?.id;
+                    }
+                  }
+                } catch (e) {
+                  console.warn('⚠️ Failed to fetch communities for mentorId backfill', e);
+                }
+              }
+
+              if (mentorId) {
+                try {
+                  const headers: any = {};
+                  if (process.env.API_TOKEN) {
+                    headers.Authorization = `Bearer ${process.env.API_TOKEN}`;
+                  }
+                  await axios.post(
+                    `${baseUrl}/telegram-revenue/add`,
+                    { mentorId, amount: amountPaid },
+                    { headers }
+                  );
+                  console.log('💸 Mentor revenue posted', { mentorId, amountPaid });
+                } catch (postErr: any) {
+                  if (postErr?.response?.status === 404) {
+                    console.warn('⚠️ Revenue record for mentor not found; skipping revenue post', { mentorId });
+                  } else {
+                    console.error('❌ Failed to post mentor revenue', postErr);
+                  }
+                }
+              } else {
+                console.warn('⚠️ mentorId not found; skipping revenue post');
+              }
+            }
+          } catch (revErr) {
+            console.error('❌ Revenue post flow failed', revErr);
+          }
+          // === end mentor revenue post ===
+        } catch (aggErr) {
+          console.error('❌ Failed to update Transaction totalAmount', aggErr);
+        }
+        // === end Transaction update ===
       } catch (e) {
         console.error('❌ Failed to send invite:', e);
         await ctx.reply(

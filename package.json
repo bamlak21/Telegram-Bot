@@ -6,6 +6,7 @@
     "test": "echo \"Error: no test specified\" && exit 1",
     "dev": "nodemon src/index.ts",
     "bot": "ts-node src/bot/bot.ts",
+    "dev:all": "concurrently \"npm run dev\" \"npm run bot\"",
     "build": "tsc"
   },
   "repository": {
