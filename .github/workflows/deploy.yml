@@ -33,7 +33,18 @@ jobs:
             exit 1
           fi
 
-      # 3. Upload compiled files and package info to server
+      # 3. Prepare deploy folder
+      - name: Prepare deploy folder
+        run: |
+          rm -rf deploy
+          mkdir deploy
+          cp -r dist deploy/
+          cp package.json deploy/
+          cp package-lock.json deploy/
+          echo "✅ Deploy folder prepared. Contents:"
+          ls -la deploy
+
+      # 4. Upload build to server
       - name: Upload build to server
         uses: appleboy/scp-action@v0.1.7
         with:
@@ -41,14 +52,11 @@ jobs:
           username: ${{ secrets.SERVER_USER }}
           password: ${{ secrets.SERVER_PASSWORD }}
           port: ${{ secrets.SERVER_PORT || 22 }}
-          source: |
-            dist
-            package.json
-            package-lock.json
+          source: "deploy/*"
           target: /root/telegram-bot
           overwrite: true
 
-      # 4. SSH into server and restart bot
+      # 5. SSH into server and restart bot
       - name: Deploy and restart bot
         uses: appleboy/ssh-action@master
         with:
