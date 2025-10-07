@@ -8,7 +8,8 @@
     "bot": "ts-node src/bot/bot.ts",
     "dev:all": "concurrently \"npm run dev\" \"npm run bot\"",
     "build": "tsc",
-    "start": "node dist/index.js"
+    "start": "node dist/index.js",
+    "start:all": "concurrently \"node dist/index.js\" \"node dist/bot/bot.js\""
   },
   "repository": {
     "type": "git",

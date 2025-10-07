@@ -11,21 +11,33 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # 1. Checkout latest code
       - name: Checkout code
         uses: actions/checkout@v3
 
-      - name: Upload code to server
+      # 2. Install dependencies and build on GitHub runner
+      - name: Install dependencies and build
+        run: |
+          npm install
+          npm run build
+
+      # 3. Upload only necessary files to the server
+      - name: Upload build to server
         uses: appleboy/scp-action@v0.1.7
         with:
           host: ${{ secrets.SERVER_HOST }}
           username: ${{ secrets.SERVER_USER }}
           password: ${{ secrets.SERVER_PASSWORD }}
           port: ${{ secrets.SERVER_PORT || 22 }}
-          source: "."
-          target: "/root/telegram-bot"
+          source: |
+            dist
+            package.json
+            package-lock.json
+          target: /root/telegram-bot
           overwrite: true
 
-      - name: Deploy on server
+      # 4. SSH into server and restart the bot
+      - name: Deploy and restart bot
         uses: appleboy/ssh-action@master
         with:
           host: ${{ secrets.SERVER_HOST }}
@@ -35,14 +47,11 @@ jobs:
           script: |
             cd /root/telegram-bot
 
-            echo "📥 Installing dependencies..."
-            npm install --production
+            echo "📥 Installing production dependencies..."
+            npm install --omit=dev
 
-            echo "🔨 Building TypeScript..."
-            npm run build || true
-
-            echo "🔄 Restarting bot with PM2 using dev:all..."
-            pm2 restart telegram-bot || pm2 start npm --name "telegram-bot" -- run dev:all
+            echo "🔄 Restarting bot with PM2 using start:all..."
+            pm2 restart telegram-bot || pm2 start npm --name "telegram-bot" -- run start:all
 
             echo "✅ Deployment completed!"
             pm2 status telegram-bot
