@@ -4,7 +4,7 @@ import { UserProfile } from '../Model/UserProfile.model';
 export interface UserRegistrationStatus {
   isRegistered: boolean;
   subscription?: any;
-  paymentStatus?: 'pending' | 'paid' | 'expired';
+  paymentStatus?: 'pending' | 'paid' | 'expired' | 'trial';
   needsRenewal?: boolean;
   userInfo?: {
     amount: any;
@@ -43,10 +43,12 @@ export async function checkUserRegistrationStatus(
         expireAt: subRequest.expireAt
       });
       
-      let paymentStatus: 'pending' | 'paid' | 'expired' = 'pending';
+      let paymentStatus: 'pending' | 'paid' | 'expired' | 'trial' = 'pending';
       
       if (isExpired) {
         paymentStatus = 'expired';
+      } else if (String(subRequest.paymentStatus) === 'trial' && subRequest.status === 'active') {
+        paymentStatus = 'trial';
       } else if (subRequest.paymentStatus === 'paid' && subRequest.status === 'active') {
         paymentStatus = 'paid';
       } else {

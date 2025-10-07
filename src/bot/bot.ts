@@ -7,7 +7,7 @@ import { sendGroupPhotoAndInvoice } from "./photo";
 import { bot } from "./botInstance";
 import { SubscriptionRequest } from "../Model/SubscriptionReq.model";
 import mongoose from 'mongoose';
-import { handleSuccessfulPayment } from "./paymentHandler";
+import { handleSuccessfulPayment, SendGroupInvite } from "./paymentHandler";
 import { checkUserRegistrationStatus, UserRegistrationStatus } from "./userStatusChecker";
 import { BotChat } from "../Model/BotChat.model";
 import { UserProfile } from "../Model/UserProfile.model";
@@ -214,10 +214,15 @@ async function promptPayment(ctx: any, lang: Lang, s: EnrollmentSession) {
     : `${s.communityName} ለመቀላቀል ክፍያ ለማድረግ ዝግጁ ነዎት?`;
   await ctx.reply(txt, {
     reply_markup: {
-      inline_keyboard: [[
+      inline_keyboard: [
+        [
         { text: lang === 'en' ? '💳 Pay' : '💳 ክፍያ', callback_data: `pay_${s.communityId}` },
-        { text: lang === 'en' ? '🏠 Back to Communities' : '🏠 ወደ ማህበረሰቦች ተመለስ', callback_data: 'back_to_communities' },
-      ]],
+          { text: lang === 'en' ? '🎁 Start Free 7-Day Trial' : '🎁 7-ቀን ነፃ ሙከራ', callback_data: `start_trial_${s.communityId}` }
+        ],
+        [
+          { text: lang === 'en' ? '🏠 Back to Communities' : '🏠 ወደ ማህበረሰቦች ተመለስ', callback_data: 'back_to_communities' }
+        ]
+      ],
     },
   });
 }
@@ -329,7 +334,7 @@ async function continueEnrollment(ctx: any) {
 
   if (s.communityId && !s.profileUpdateMode) {
     // In enrollment flow: show payment
-    await promptPayment(ctx, lang, s);
+  await promptPayment(ctx, lang, s);
   } else {
     // Profile-only or update flow: show summary and update menu
     const useAm = (lang === 'am');
@@ -373,21 +378,21 @@ async function showCommunities(ctx: any, language: string) {
       const communities = response.data;
 
       // Build 2-column inline keyboard
-      const keyboard: any[] = [];
-      for (let i = 0; i < communities.length; i += 2) {
-        const row: any[] = [];
+        const keyboard: any[] = [];
+        for (let i = 0; i < communities.length; i += 2) {
+          const row: any[] = [];
         const c1 = communities[i];
         const id1 = c1.communityId || c1._id || c1.id;
         const name1 = c1.communityName || c1.name || 'Community';
         row.push({ text: `🏛️ ${name1}`, callback_data: `view_community_${id1}` });
-        if (i + 1 < communities.length) {
+          if (i + 1 < communities.length) {
           const c2 = communities[i + 1];
           const id2 = c2.communityId || c2._id || c2.id;
           const name2 = c2.communityName || c2.name || 'Community';
           row.push({ text: `🏛️ ${name2}`, callback_data: `view_community_${id2}` });
         }
-        keyboard.push(row);
-      }
+          keyboard.push(row);
+        }
 
       // Send image without caption; attach keyboard
       try {
@@ -598,6 +603,12 @@ bot.command("start", async (ctx) => {
   }
 
   // Default: show language selection
+  // Clear any stale enrollment sessions from previous incomplete flows
+  if (userTelegramId) {
+    enrollSessions.delete(userTelegramId);
+    paymentSessions.delete(userTelegramId);
+  }
+  
   await ctx.reply("🌍 **Welcome! To get started, please select your preferred language.**\n\nእንኳን በደህና መጡ! ለመጀመር እባክዎ የሚፈልጉትን ቋንቋ ይምረጡ።", {
     parse_mode: 'Markdown',
     reply_markup: {
@@ -669,17 +680,20 @@ bot.action("language_en", async (ctx) => {
   if (userTelegramId) {
     userLanguages.set(userTelegramId, "en");
     const s = enrollSessions.get(userTelegramId);
-    if (s) {
+    // Only continue enrollment if in active enrollment with communityId
+    if (s && s.communityId) {
       s.language = 'en';
-      s.step = 'awaiting_terms'; // Add this line to update the step
+      s.step = 'awaiting_terms';
       enrollSessions.set(userTelegramId, s);
       await continueEnrollment(ctx);
       return;
+    } else {
+      // Clear stale session if no community context
+      enrollSessions.delete(userTelegramId);
     }
   }
   await ctx.reply("🇺🇸 **Language set to English!**\n\nLet me show you the available communities.");
   await showCommunities(ctx, "en");
-  await ctx.answerCbQuery("✅ Language set to English");
 });
 
 bot.action("language_am", async (ctx) => {
@@ -688,17 +702,20 @@ bot.action("language_am", async (ctx) => {
   if (userTelegramId) {
     userLanguages.set(userTelegramId, "am");
     const s = enrollSessions.get(userTelegramId);
-    if (s) {
+    // Only continue enrollment if in active enrollment with communityId
+    if (s && s.communityId) {
       s.language = 'am';
-      s.step = 'awaiting_terms'; // Add this line to update the step
+      s.step = 'awaiting_terms';
       enrollSessions.set(userTelegramId, s);
       await continueEnrollment(ctx);
       return;
+    } else {
+      // Clear stale session if no community context
+      enrollSessions.delete(userTelegramId);
     }
   }
   await ctx.reply("🇪🇹 **ቋንቋ ወደ አማርኛ ተቀይሯል!**\n\nየሚገኙ ማህበረሰቦችን እንድያዩ ያድርጉኝ።");
   await showCommunities(ctx, "am");
-  await ctx.answerCbQuery("✅ ቋንቋ ወደ አማርኛ ተቀይሯል");
 });
 
 bot.action('back_to_list', async (ctx) => {
@@ -853,6 +870,23 @@ bot.action(/^join_community_(.+)$/, async (ctx) => {
             callback_data: `renew_community_${communityId}` 
           }
         ]);
+      } else if (userStatus.paymentStatus === 'trial') {
+        // On trial - show status
+        const trialMessage = userLang === 'en'
+          ? '\n\n🎁 **You are currently on a 7-day free trial for this community!**'
+          : '\n\n🎁 **ለዚህ ማህበረሰብ 7-ቀን ነፃ ሙከራ ላይ ነዎት!**';
+        
+        await ctx.reply(statusMessage + trialMessage, { 
+          parse_mode: 'Markdown',
+          reply_markup: {
+            inline_keyboard: [
+              [{ text: userLang === 'en' ? '💳 Upgrade to Paid' : '💳 ወደ ክፍያ አድርግ', callback_data: `continue_payment_${communityId}` }],
+              [{ text: userLang === 'en' ? '🏠 Back to Communities' : '🏠 ወደ ማህበረሰቦች ተመለስ', callback_data: 'back_to_communities' }]
+            ]
+          }
+        });
+        await ctx.answerCbQuery("✅ On trial");
+        return;
       } else if (userStatus.paymentStatus === 'paid') {
         // Already active member
         const activeMessage = userLang === 'en'
@@ -1955,10 +1989,10 @@ bot.command("my_community", async (ctx) => {
   const lang: 'en' | 'am' = (userLanguages.get(uid) || 'en');
 
   try {
-    // Only fetch paid/active communities
+    // Fetch paid/trial/active communities
     const subs = await SubscriptionRequest.find({ 
       userId: String(uid),
-      paymentStatus: { $in: ['paid', 'renewed'] },
+      paymentStatus: { $in: ['paid', 'renewed', 'trial'] },
       status: 'active'
     }).sort({ updatedAt: -1 });
     
@@ -1971,7 +2005,12 @@ bot.command("my_community", async (ctx) => {
     for (const s of subs) {
       const isAm = (s as any).language === 'am' || lang === 'am';
       const status = String((s as any).paymentStatus || 'paid');
-      const expireAt = (s as any).expireAt ? new Date((s as any).expireAt as any) : undefined;
+      const isTrial = status === 'trial';
+      
+      // For trial, show trialExpireAt; for paid, show expireAt
+      const expireAt = isTrial 
+        ? ((s as any).trialExpireAt ? new Date((s as any).trialExpireAt as any) : undefined)
+        : ((s as any).expireAt ? new Date((s as any).expireAt as any) : undefined);
       const expireStr = expireAt ? expireAt.toLocaleString() : (isAm ? 'አይገኝም' : 'N/A');
       
       // Check if subscription is expired
@@ -1980,18 +2019,25 @@ bot.command("my_community", async (ctx) => {
       const msg = isAm
         ? `🏛️ ${s.communityName}
 
-ሁኔታ: ${status}
+ሁኔታ: ${status}${isTrial ? ' 🎁 (ነፃ ሙከራ)' : ''}
 መጨረሻ ቀን: ${expireStr}`
         : `🏛️ ${s.communityName}
 
-Status: ${status}
+Status: ${status}${isTrial ? ' 🎁 (Free Trial)' : ''}
 Expire At: ${expireStr}`;
 
       const keyboard: any = {
         inline_keyboard: []
       };
 
-      // Only show renew button if expired
+      // Show upgrade button if trial
+      if (isTrial && !isExpired) {
+        keyboard.inline_keyboard.push([
+          { text: isAm ? '💳 ወደ ክፍያ አሻሽል' : '💳 Upgrade to Paid', callback_data: `continue_payment_${s.communityId}` }
+        ]);
+      }
+      
+      // Show renew button if expired
       if (isExpired) {
         keyboard.inline_keyboard.push([
           { text: isAm ? '🔄 እድሳት' : '🔄 Renew', callback_data: `renew_community_${s.communityId}` }
@@ -2017,146 +2063,11 @@ bot.hears(/^\/my\-community(?:@[^\s]+)?$/i, async (ctx) => {
   await (bot as any).handleUpdate(ctx.update);
 });
 
-// Middleware: upsert chat info on every update
-bot.use(async (ctx, next) => {
-  try {
-    const chat = ctx.chat as any;
-    if (chat && chat.id) {
-      await BotChat.findOneAndUpdate(
-        { chatId: String(chat.id) },
-        {
-          chatId: String(chat.id),
-          type: chat.type,
-          title: chat.title,
-          username: chat.username,
-          first_name: chat.first_name,
-          last_name: chat.last_name,
-          is_forum: chat.is_forum,
-          linked_chat_id: chat.linked_chat_id ? String(chat.linked_chat_id) : undefined,
-          lastSeenAt: new Date(),
-        },
-        { upsert: true }
-      );
-    }
-  } catch (e) {
-    console.warn('Chat upsert failed', e);
-  }
-  return next();
-});
 
-// Admin command to list connected group chats (admin-only)
-bot.command('admin_1234', async (ctx) => {
-  const uid = ctx.from?.id ? String(ctx.from.id) : '';
-  const adminIds = (process.env.ADMIN_IDS || process.env.PRIMARY_ADMIN_ID || '').split(',').map(s => s.trim()).filter(Boolean);
-  if (!uid || (adminIds.length > 0 && !adminIds.includes(uid))) {
-    return;
-  }
 
-  try {
-    const chats = await BotChat.find({ type: { $in: ['group', 'supergroup'] } }).sort({ updatedAt: -1 }).limit(100);
-    if (!chats || chats.length === 0) {
-      await ctx.reply('No connected groups found.');
-      return;
-    }
-
-    const lines: string[] = [];
-    for (let i = 0; i < chats.length; i++) {
-      const c: any = chats[i];
-      let title = c.title || c.username || c.first_name || 'Group';
-      let memberCount = 'N/A';
-      try {
-        const info: any = await ctx.telegram.getChat(c.chatId);
-        title = (info && (info as any).title) ? (info as any).title : title;
-        try {
-          const count = await (ctx.telegram as any).getChatMembersCount(c.chatId);
-          memberCount = String(count);
-        } catch { /* ignore */ }
-      } catch { /* ignore */ }
-
-      lines.push(`${i + 1}. ${title}\n   id: ${c.chatId}\n   type: ${c.type}${c.is_forum ? ' (forum)' : ''}\n   members: ${memberCount}\n   lastSeen: ${new Date(c.lastSeenAt || c.updatedAt).toLocaleString()}`);
-    }
-
-    const header = `Connected groups (${chats.length}):`;
-    let buffer = header + '\n\n';
-    for (const line of lines) {
-      if ((buffer + line + '\n').length > 3500) {
-        await ctx.reply(buffer.trim());
-        buffer = '';
-      }
-      buffer += line + '\n';
-    }
-    if (buffer.trim().length) {
-      await ctx.reply(buffer.trim());
-    }
-  } catch (err) {
-    console.error('/admin-1234 error', err);
-    await ctx.reply('Failed to fetch connected groups.');
-  }
-});
 
 // Alias: support /admin-1234
-bot.hears(/^\/admin-1234(?:@[^\s]+)?$/i, async (ctx) => {
-  (ctx as any).message.text = '/admin_1234';
-  await (bot as any).handleUpdate(ctx.update);
-});
 
-// Capture when the bot is added/updated in a chat (e.g., added to a group)
-bot.on('my_chat_member', async (ctx) => {
-  try {
-    const upd: any = (ctx as any).update?.my_chat_member;
-    const chat = upd?.chat;
-    if (chat && chat.id) {
-      await BotChat.findOneAndUpdate(
-        { chatId: String(chat.id) },
-        {
-          chatId: String(chat.id),
-          type: chat.type,
-          title: chat.title,
-          username: chat.username,
-          first_name: chat.first_name,
-          last_name: chat.last_name,
-          is_forum: chat.is_forum,
-          linked_chat_id: chat.linked_chat_id ? String(chat.linked_chat_id) : undefined,
-          lastSeenAt: new Date(),
-        },
-        { upsert: true }
-      );
-      console.log('✅ Registered chat via my_chat_member:', { chatId: chat.id, type: chat.type, title: chat.title });
-    }
-  } catch (e) {
-    console.warn('my_chat_member upsert failed', e);
-  }
-});
-
-// Command to register the current group explicitly
-bot.command('register_group', async (ctx) => {
-  const chat: any = ctx.chat;
-  if (!chat || (chat.type !== 'group' && chat.type !== 'supergroup')) {
-    await ctx.reply('Use this command inside a group where the bot is added.');
-    return;
-  }
-  try {
-    await BotChat.findOneAndUpdate(
-      { chatId: String(chat.id) },
-      {
-        chatId: String(chat.id),
-        type: chat.type,
-        title: chat.title,
-        username: chat.username,
-        first_name: chat.first_name,
-        last_name: chat.last_name,
-        is_forum: chat.is_forum,
-        linked_chat_id: chat.linked_chat_id ? String(chat.linked_chat_id) : undefined,
-        lastSeenAt: new Date(),
-      },
-      { upsert: true }
-    );
-    await ctx.reply('✅ Group registered with the bot. It will now appear in admin listings.');
-  } catch (e) {
-    console.error('register_group failed', e);
-    await ctx.reply('❌ Failed to register this group.');
-  }
-});
 
 // Command to display group chat information
 bot.command('id', async (ctx) => {
@@ -2547,17 +2458,13 @@ bot.action('confirm_payment_phone_yes', async (ctx) => {
   if (!s) return;
   const lang: Lang = (userLanguages.get(uid) || s.language || 'en');
   if (s.step !== 'awaiting_payment_phone') return;
-  // proceed to invoice according to paymentMode
-  if (s.paymentMode === 'pay') {
-    // Call original pay logic by reusing current handler pathway
-    s.step = 'ready_for_payment';
-    enrollSessions.set(uid, s);
-    // trigger invoice using existing pay logic
-    const tmpCtx: any = ctx;
-    // reuse by calling the same code path (fallthrough to existing invoice code)
-    // We'll redirect to a small helper
-    await generateInvoiceFromSession(tmpCtx, lang, s);
-  }
+  
+  await ctx.answerCbQuery('✅');
+  
+  // Proceed to invoice for all payment modes
+  s.step = 'ready_for_payment';
+  enrollSessions.set(uid, s);
+  await generateInvoiceFromSession(ctx, lang, s);
 });
 
 bot.action('confirm_payment_phone_no', async (ctx) => {
@@ -2566,10 +2473,13 @@ bot.action('confirm_payment_phone_no', async (ctx) => {
   const s = enrollSessions.get(uid);
   if (!s) return;
   const lang: Lang = (userLanguages.get(uid) || s.language || 'en');
+  
+  await ctx.answerCbQuery('✏️');
+  
   // Ask for a new phone via reply and wait for text
   s.step = 'awaiting_payment_phone';
   enrollSessions.set(uid, s);
-  await ctx.reply(lang === 'en' ? 'Please enter the phone number to use for payment.' : 'እባክዎ ለክፍያ የሚጠቀሙትን የስልክ ቁጥር ያስገቡ።');
+  await ctx.reply(lang === 'en' ? '📱 Please enter the phone number to use for payment.' : '📱 እባክዎ ለክፍያ የሚጠቀሙትን የስልክ ቁጥር ያስገቡ።');
 });
 
 // Helper to generate the invoice with session data
@@ -2586,11 +2496,26 @@ async function generateInvoiceFromSession(ctx: any, lang: Lang, s: EnrollmentSes
     s.txRef = txRef;
     enrollSessions.set(uid, s);
     try {
-      await SubscriptionRequest.findOneAndUpdate(
-        { userId: String(uid), communityId: s.communityId },
-        { tx_ref: txRef, paymentStatus: 'pending' as any, status: 'active' as any, amount: s.price, communityName: s.communityName },
-        { upsert: true, new: true }
-      );
+      // Check if user is currently on trial
+      const existing = await SubscriptionRequest.findOne({ userId: String(uid), communityId: s.communityId });
+      const isOnTrial = existing && String((existing as any).paymentStatus) === 'trial' && String((existing as any).status) === 'active';
+      
+      if (isOnTrial) {
+        // Preserve trial status; only store tx_ref for when payment succeeds
+        await SubscriptionRequest.findOneAndUpdate(
+          { userId: String(uid), communityId: s.communityId },
+          { tx_ref: txRef, amount: s.price, communityName: s.communityName },
+          { new: true }
+        );
+        console.log('💡 User on trial; preserving trial status, stored tx_ref for upgrade:', txRef);
+      } else {
+        // Not on trial; set to pending as usual
+        await SubscriptionRequest.findOneAndUpdate(
+          { userId: String(uid), communityId: s.communityId },
+          { tx_ref: txRef, paymentStatus: 'pending' as any, status: 'active' as any, amount: s.price, communityName: s.communityName },
+          { upsert: true, new: true }
+        );
+      }
     } catch {}
     const providerData = {
       phone: s.paymentPhone || s.phone,
@@ -2622,4 +2547,108 @@ async function generateInvoiceFromSession(ctx: any, lang: Lang, s: EnrollmentSes
     await ctx.reply(lang === 'en' ? '⚠️ Failed to generate invoice. Please try again later.' : '⚠️ ደረሰኝ ማመንጨት አልተቻለም። እባክዎ በኋላ ይሞክሩ።');
   }
 }
+
+// Start Free 7-Day Trial handler
+bot.action(/^start_trial_(.+)$/, async (ctx) => {
+  const communityId = ctx.match![1];
+  const uid = ctx.from?.id as number | undefined;
+  if (!uid) return;
+  const s = enrollSessions.get(uid);
+  const lang: Lang = (userLanguages.get(uid) || s?.language || 'en');
+  
+  await ctx.answerCbQuery('');
+  
+  try {
+    // Ensure session exists and matches community
+    if (!s || s.communityId !== communityId) {
+      await ctx.reply(lang === 'en' ? 'Session expired. Please select the community again.' : 'ክፍለ ጊዜ አልቆሞታል። እባክዎ ማህበረሰቡን እንደገና ይምረጡ።');
+      return;
+    }
+    
+    // Check if profile is complete
+    const missing: string[] = [];
+    if (!s.phone) missing.push('phone');
+    if (!s.fullName) missing.push('full name');
+    if (!s.gender) missing.push('gender');
+    if (!s.dob) missing.push('dob');
+    if (!s.residence) missing.push('residence');
+    
+    if (missing.length > 0) {
+      await ctx.reply(lang === 'en' ? 'Please complete your profile first.' : 'እባክዎ መገለጫዎን በመጀመሪያ ያጠናቅቁ።');
+      await continueEnrollment(ctx);
+      return;
+    }
+    
+    // Check trial eligibility
+    const latest = await SubscriptionRequest.findOne({ userId: String(uid), communityId }).sort({ createdAt: -1 });
+    const alreadyPaid = latest && ['paid', 'renewed'].includes(String((latest as any).paymentStatus || ''));
+    const trialUsed = latest && Boolean((latest as any).trialUsed);
+    const ongoingTrial = latest && String((latest as any).paymentStatus) === 'trial' && String((latest as any).status) === 'active';
+    
+    if (alreadyPaid) {
+      await ctx.reply(lang === 'en' ? '✅ You already have an active membership.' : '✅ አስቀድሞ ንቁ አባልነት አለዎት።');
+      return;
+    }
+    if (ongoingTrial) {
+      await ctx.reply(lang === 'en' ? '✅ You already have an active trial for this community.' : '✅ ለዚህ ማህበረሰብ ንቁ ሙከራ አሎት።');
+      return;
+    }
+    if (trialUsed) {
+      await ctx.reply(lang === 'en' ? '❌ Free trial already used for this community. Please pay to join.' : '❌ ለዚህ ማህበረሰብ ነፃ ሙከራ ተጠቅመውታል። ለመቀላቀል ክፍያ ያድርጉ።');
+      return;
+    }
+    
+    // Start 7-day trial
+    const now = new Date();
+    const trialExpireAt = new Date(now);
+    trialExpireAt.setDate(trialExpireAt.getDate() + 7);
+    
+    // Generate tx_ref for trial
+    const trialTxRef = `trial_${communityId}_${uid}_${Date.now()}`;
+    
+    const doc = await SubscriptionRequest.findOneAndUpdate(
+      { userId: String(uid), communityId },
+      {
+        userId: String(uid),
+        communityId,
+        communityName: s.communityName,
+        groupId: (s.community && (s.community as any).groupId) || '',
+        tx_ref: trialTxRef,
+        status: 'active' as any,
+        paymentStatus: 'trial' as any,
+        joinDate: now,
+        trialStartAt: now,
+        trialExpireAt,
+        trialUsed: true,
+        trialNoticeCount: 0,
+        amount: s.price,
+      },
+      { upsert: true, new: true }
+    );
+    
+    console.log('🎁 Trial started for user', uid, 'community', communityId);
+    
+    // Send welcome + invite
+    const welcomeMsg = lang === 'en' 
+      ? `👋 **You are now in a 7-day free trial for ${s.communityName}.**\n\nYou have full access for the next 7 days. After that, you'll need to pay to continue.\n\nWe'll send you a reminder on Day 5.`
+      : `👋 **ወደ ${s.communityName} 7-ቀን ነፃ ሙከራ ተቀላቀሉ።**\n\nለሚቀጥሉት 7 ቀናት ሙሉ መዳረሻ አሎት። ከዚያ በኋላ ለመቀጠል መክፈል ይኖርብዎታል።\n\nበቀን 5 ላይ ማስታወሻ እንልክዎታለን።`;
+    
+    await ctx.reply(welcomeMsg, { parse_mode: 'Markdown' });
+    
+    if ((doc as any).groupId) {
+      try {
+        await SendGroupInvite(String(uid), String((doc as any).groupId));
+        console.log('✅ Trial invite sent to user', uid);
+      } catch (inviteErr) {
+        console.error('❌ Failed to send trial invite', inviteErr);
+        await ctx.reply(lang === 'en' ? '⚠️ Trial activated but invite failed. Contact support.' : '⚠️ ሙከራ ገብተናል ግን ግብዣው አልተሳካም። ድጋፍ ያግኙ።');
+      }
+    } else {
+      await ctx.reply(lang === 'en' ? '⚠️ Trial started but group info missing. Contact support.' : '⚠️ ሙከራ ተጀምሯል ግን የቡድን መረጃ ይጎዳል። ድጋፍ ያግኙ።');
+    }
+  } catch (err) {
+    console.error('❌ start_trial error', err);
+    await ctx.reply(lang === 'en' ? '⚠️ Failed to start free trial. Please try again.' : '⚠️ ነፃ ሙከራ መጀመር አልተቻለም። እባክዎ እንደገና ይሞክሩ።');
+  }
+});
 

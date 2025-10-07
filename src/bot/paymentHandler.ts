@@ -131,6 +131,9 @@ export async function handleSuccessfulPayment(
       prevPaymentStatus: subRequest.paymentStatus,
       prevStatus: subRequest.status,
     });
+    
+    const wasOnTrial = String(subRequest.paymentStatus) === 'trial';
+    
     subRequest.paymentStatus = 'paid' as any;
     subRequest.status = 'active' as any;
     (subRequest as any).joinDate = new Date();
@@ -138,6 +141,15 @@ export async function handleSuccessfulPayment(
     const expireAt = new Date((subRequest as any).joinDate);
     expireAt.setMonth(expireAt.getMonth() + 1);
     (subRequest as any).expireAt = expireAt;
+    
+    // Clear trial fields when converting to paid
+    if (wasOnTrial) {
+      (subRequest as any).trialStartAt = undefined;
+      (subRequest as any).trialExpireAt = undefined;
+      (subRequest as any).trialNoticeCount = 0;
+      console.log('🎁→💳 Converting trial to paid membership');
+    }
+    
     await subRequest.save();
     console.log('✅ Saved SubscriptionRequest after payment:', {
       id: subRequest._id.toString(),
@@ -149,14 +161,32 @@ export async function handleSuccessfulPayment(
 
     if (subRequest.userId && subRequest.groupId) {
       try {
-        console.log('📨 Sending invite with groupId:', subRequest.groupId, 'to userId:', subRequest.userId);
-        await SendGroupInvite(String(subRequest.userId), String(subRequest.groupId));
-        const successMessage =
-          lang === 'en'
+        // Check if user is already in group (from trial)
+        let alreadyInGroup = false;
+        try {
+          const member = await bot.telegram.getChatMember(String(subRequest.groupId), Number(subRequest.userId));
+          const memberStatus = String((member as any)?.status || '');
+          alreadyInGroup = ['member', 'administrator', 'creator'].includes(memberStatus);
+        } catch {}
+        
+        let successMessage = '';
+        
+        if (wasOnTrial && alreadyInGroup) {
+          // Trial upgrade - no new invite needed
+          successMessage = lang === 'en'
+            ? `✅ Payment successful! Your trial has been upgraded to a paid membership.\n\nETB${(payment.total_amount / 100).toFixed(2)} transferred for ${subRequest.communityName}.\n\n🎉 You now have 30 days of full access from today.`
+            : `✅ ክፍያ ተሳክቷል! የእርስዎ ሙከራ ወደ የተከፈለ አባልነት ተለውጧል።\n\nETB${(payment.total_amount / 100).toFixed(2)} ለ${subRequest.communityName} ተላልፏል።\n\n🎉 አሁን ከዛሬ ጀምሮ የ30 ቀን ሙሉ መዳረሻ አሎት።`;
+          await ctx.reply(successMessage);
+        } else {
+          // New member or rejoining - send invite
+          console.log('📨 Sending invite with groupId:', subRequest.groupId, 'to userId:', subRequest.userId);
+          await SendGroupInvite(String(subRequest.userId), String(subRequest.groupId));
+          successMessage = lang === 'en'
             ? `✅ You successfully transferred ETB${(payment.total_amount / 100).toFixed(2)} to Tigat Bot for ${subRequest.communityName}. Your subscription is now active.\n\nJoin the group using the link sent above.\n⏳ The link will expire in 10 minutes.`
             : `✅ ለ${subRequest.communityName} ወደ Tigat Bot ETB${(payment.total_amount / 100).toFixed(2)} በተሳካ ሁኔታ አስተላልፈዋል። ምዝገባዎ አሁን ንቁ ነው።\n\nከላይ የተላከውን ሊንክ ተጠቅመው ቡድኑን ይቀላቀሉ።\n⏳ ሊንኩ በ10 ደቂቃ ውስጥ ይሽረሳል።`;
-        await ctx.reply(successMessage);
-        console.log('✅ Invite message sent to user', subRequest.userId);
+          await ctx.reply(successMessage);
+        }
+        console.log('✅ Payment success message sent to user', subRequest.userId);
 
         // === Update Transaction aggregation per community ===
         try {

@@ -6,6 +6,7 @@ import { UserProfile } from '../Model/UserProfile.model';
 function scheduleExpiryJobs() {
   // Daily at 8:00 AM for production
   cron.schedule('0 8 * * *', async () => {
+
     try {
       const now = new Date();
       const startOfDay = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
@@ -13,6 +14,83 @@ function scheduleExpiryJobs() {
 
       console.log('🕐 Daily expiry check running at 8:00 AM...');
       
+      // ===== Trial flows =====
+      console.log('🎁 Checking active trials...');
+      const trialDocs = await SubscriptionRequest.find({ paymentStatus: 'trial', status: 'active' });
+      console.log(`Found ${trialDocs.length} active trial(s)`);
+      
+      for (const t of trialDocs as any[]) {
+        if (!t.trialExpireAt || !t.trialStartAt) continue;
+        const exp = new Date(t.trialExpireAt);
+        const diffDays = Math.ceil((exp.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+        const userId = String(t.userId || '');
+        if (!userId) continue;
+        
+        try {
+          const userProfile = await UserProfile.findOne({ telegramId: userId });
+          const isAm = userProfile?.language === 'am';
+          
+          // Day 5 reminder: 2 days remaining
+          if (diffDays === 2 && (t.trialNoticeCount || 0) < 1) {
+            const msg = isAm
+              ? `⏳ የእርስዎ ሙከራ በ2 ቀናት ውስጥ ጊዜው ያልፍበታል። ያለ መቋረጥ ለመቀጠል ክፍያ ይፈጽሙ።\n\nማህበረሰብ: ${t.communityName || 'ማህበረሰብ'}`
+              : `⏳ Your trial will expire in 2 days. Pay now to continue without interruption.\n\nCommunity: ${t.communityName || 'Community'}`;
+            
+            const keyboard = {
+              inline_keyboard: [
+                [
+                  { text: isAm ? '💳 አሁን ክፍያ ይፈጽሙ' : '💳 Pay Now', callback_data: `continue_payment_${t.communityId}` },
+                  { text: isAm ? '🏠 ማህበረሰቦች' : '🏠 Communities', callback_data: 'back_to_communities' }
+                ]
+              ]
+            };
+            
+            await bot.telegram.sendMessage(userId, msg, { reply_markup: keyboard });
+            t.trialNoticeCount = (t.trialNoticeCount || 0) + 1;
+            await t.save();
+            console.log(`📨 Day 5 trial reminder sent to user ${userId}`);
+          }
+          
+          // Day 7 expiry: trial ended
+          if (diffDays <= 0) {
+            const msg = isAm
+              ? `⛔ የነፃ ሙከራዎ ተጠናቋል። እንደገና ለመቀላቀል ክፍያ ይፈጽሙ።\n\nማህበረሰብ: ${t.communityName || 'ማህበረሰብ'}`
+              : `⛔ Your free trial has ended. Please pay to rejoin.\n\nCommunity: ${t.communityName || 'Community'}`;
+            
+            const keyboard = {
+              inline_keyboard: [
+                [
+                  { text: isAm ? '💳 አሁን ክፍያ ይፈጽሙ' : '💳 Pay Now', callback_data: `continue_payment_${t.communityId}` },
+                  { text: isAm ? '🏠 ማህበረሰቦች' : '🏠 Communities', callback_data: 'back_to_communities' }
+                ]
+              ]
+            };
+            
+            await bot.telegram.sendMessage(userId, msg, { reply_markup: keyboard });
+            
+            if (t.groupId) {
+              try {
+                await bot.telegram.banChatMember(String(t.groupId), Number(userId));
+                await bot.telegram.unbanChatMember(String(t.groupId), Number(userId));
+                console.log(`👢 Removed user ${userId} from trial group ${t.groupId}`);
+              } catch (kickErr) {
+                console.error('❌ Failed to kick trial user', userId, kickErr);
+              }
+            }
+            
+            // Mark expired
+            t.status = 'expired';
+            t.paymentStatus = 'expired';
+            await t.save();
+            console.log(`✅ Trial expired for user ${userId}, community ${t.communityId}`);
+          }
+        } catch (trialNotifyErr) {
+          console.error('⚠️ Trial notification failed for user', userId, trialNotifyErr);
+        }
+      }
+      
+      // ===== Paid membership expiry flows =====
+      console.log('💳 Checking paid memberships...');
       // Find subscriptions that should be expiring today
       // Use a simpler approach - get all paid/active subscriptions and filter in code
       const allPaidSubs = await SubscriptionRequest.find({
@@ -64,7 +142,7 @@ function scheduleExpiryJobs() {
             lines.push(`• ${((d as any).communityName) || (isAm ? 'ማህበረሰብ' : 'Community')}`);
           }
           const msg = isAm
-            ? `⚠️ የእርስዎ መዳረሻ ዛሬ ይሽረሳል፦\n\n${lines.join('\n')}\n\nለመቀጠል እድሳት ይጫኑ።`
+            ? `⚠️ የእርስዎ መዳረሻ ዛሬ ጊዜው ያልፍበታል።፦\n\n${lines.join('\n')}\n\nለመቀጠል እድሳት ይጫኑ።`
             : `⚠️ Your access expires today for:\n\n${lines.join('\n')}\n\nTap Renew to continue access.`;
 
           const keyboard = {
@@ -110,7 +188,7 @@ function scheduleExpiryJobs() {
           const isAm = userProfile?.language === 'am';
           
           const finalMsg = isAm
-            ? '⛔ መዳረሻዎ ልክ ሆኖ አልተዘማመነም፣ ከቡድኑ ተወግደዋል። እንደገና ለመዳረስ እድሳት ይጠቀሙ።'
+            ? '⛔ መዳረሻዎ ጊዜው አልፎበታል እና ከቡድኑ ተወግደዋል። መዳረሻን መልሰው ለማግኘት እድሳትን ይጠቀሙ።'
             : '⛔ Your access has expired and you have been removed from the group. Use Renew to regain access.';
           
           await bot.telegram.sendMessage(userId, finalMsg);

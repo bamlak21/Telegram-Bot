@@ -11,7 +11,7 @@ const SubscriptionRequestSchema = new Schema(
       required: true,
       default: "active",
     },
-    paymentStatus: { type: String, enum: ["pending", "paid", "renewed", "expired"], default: "pending", index: true },
+    paymentStatus: { type: String, enum: ["pending", "paid", "renewed", "expired", "trial"], default: "pending", index: true },
     joinDate: { type: Date },
     expireAt: { type: Date, index: true },
     communityId: { type: String, index: true },
@@ -19,6 +19,11 @@ const SubscriptionRequestSchema = new Schema(
     amount: { type: Number },
     expiryNoticeCount: { type: Number, default: 0 },
     lastNoticeAt: { type: Date },
+    // Trial fields
+    trialUsed: { type: Boolean, default: false },
+    trialStartAt: { type: Date },
+    trialExpireAt: { type: Date, index: true },
+    trialNoticeCount: { type: Number, default: 0 },
   },
   { timestamps: true }
 );
