@@ -41,8 +41,8 @@ jobs:
             echo "🔨 Building TypeScript..."
             npm run build || true
 
-            echo "🔄 Restarting bot with PM2..."
-            pm2 restart telegram-bot || pm2 start npm --name "telegram-bot" -- start
+            echo "🔄 Restarting bot with PM2 using dev:all..."
+            pm2 restart telegram-bot || pm2 start npm --name "telegram-bot" -- run dev:all
 
             echo "✅ Deployment completed!"
             pm2 status telegram-bot
