@@ -15,13 +15,25 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
 
-      # 2. Install dependencies and build on GitHub runner
+      # 2. Install dependencies and build TypeScript
       - name: Install dependencies and build
         run: |
+          echo "📦 Installing dependencies..."
           npm install
+
+          echo "🔨 Building TypeScript..."
           npm run build
 
-      # 3. Upload only necessary files to the server
+          echo "🧾 Checking dist folder..."
+          if [ -d "dist" ]; then
+            echo "✅ dist folder found. Contents:"
+            ls -la dist
+          else
+            echo "❌ dist folder not found! Build failed."
+            exit 1
+          fi
+
+      # 3. Upload compiled files and package info to server
       - name: Upload build to server
         uses: appleboy/scp-action@v0.1.7
         with:
@@ -36,7 +48,7 @@ jobs:
           target: /root/telegram-bot
           overwrite: true
 
-      # 4. SSH into server and restart the bot
+      # 4. SSH into server and restart bot
       - name: Deploy and restart bot
         uses: appleboy/ssh-action@master
         with:
