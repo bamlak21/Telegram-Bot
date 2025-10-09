@@ -212,17 +212,34 @@ async function promptPayment(ctx: any, lang: Lang, s: EnrollmentSession) {
   const txt = lang === 'en'
     ? `Ready to pay and join ${s.communityName}?`
     : `${s.communityName} ለመቀላቀል ክፍያ ለማድረግ ዝግጁ ነዎት?`;
+  
+  // Check if community supports free trial
+  const isFreeTrialEnabled = s.community && (s.community.isFree === true || s.community.isFree === 'true');
+  
+  const buttons: any[] = [];
+  
+  // First row with payment options
+  const paymentRow: any[] = [
+    { text: lang === 'en' ? '💳 Pay' : '💳 ክፍያ', callback_data: `pay_${s.communityId}` }
+  ];
+  
+  // Add trial button only if community supports it
+  if (isFreeTrialEnabled) {
+    paymentRow.push(
+      { text: lang === 'en' ? '🎁 Start Free 7-Day Trial' : '🎁 7-ቀን ነፃ ሙከራ', callback_data: `start_trial_${s.communityId}` }
+    );
+  }
+  
+  buttons.push(paymentRow);
+  
+  // Second row with back button
+  buttons.push([
+    { text: lang === 'en' ? '🏠 Back to Communities' : '🏠 ወደ ማህበረሰቦች ተመለስ', callback_data: 'back_to_communities' }
+  ]);
+  
   await ctx.reply(txt, {
     reply_markup: {
-      inline_keyboard: [
-        [
-        { text: lang === 'en' ? '💳 Pay' : '💳 ክፍያ', callback_data: `pay_${s.communityId}` },
-          { text: lang === 'en' ? '🎁 Start Free 7-Day Trial' : '🎁 7-ቀን ነፃ ሙከራ', callback_data: `start_trial_${s.communityId}` }
-        ],
-        [
-          { text: lang === 'en' ? '🏠 Back to Communities' : '🏠 ወደ ማህበረሰቦች ተመለስ', callback_data: 'back_to_communities' }
-        ]
-      ],
+      inline_keyboard: buttons,
     },
   });
 }
@@ -2562,6 +2579,15 @@ bot.action(/^start_trial_(.+)$/, async (ctx) => {
     // Ensure session exists and matches community
     if (!s || s.communityId !== communityId) {
       await ctx.reply(lang === 'en' ? 'Session expired. Please select the community again.' : 'ክፍለ ጊዜ አልቆሞታል። እባክዎ ማህበረሰቡን እንደገና ይምረጡ።');
+      return;
+    }
+    
+    // Check if community supports free trial
+    const isFreeTrialEnabled = s.community && (s.community.isFree === true || s.community.isFree === 'true');
+    if (!isFreeTrialEnabled) {
+      await ctx.reply(lang === 'en' 
+        ? '❌ This community does not offer free trials. Please use the Pay button.' 
+        : '❌ ይህ ማህበረሰብ ነፃ ሙከራ አይሰጥም። እባክዎ የክፍያ ቁልፍን ይጠቀሙ።');
       return;
     }
     
